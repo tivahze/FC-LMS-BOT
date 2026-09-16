@@ -10,7 +10,7 @@ const RADIUS=Math.max(2,Number(process.env.ID_SWEEP_RADIUS||12));
 const state={running:false,probed:0,found:0,newClubs:0,hydrated:0,newPlayers:0,lastId:'',lastError:'',started:0};
 
 async function seedAroundKnown(store){
-  const rows=await store.q(`SELECT DISTINCT club_id FROM clubs WHERE platform=$1 AND club_id~'^[0-9]+$' ORDER BY club_id::bigint`,[PLATFORM]);
+  const rows=await store.q(`SELECT club_id FROM clubs WHERE platform=$1 AND club_id~'^[0-9]+$' GROUP BY club_id ORDER BY club_id::bigint`,[PLATFORM]);
   let added=0;
   for(const row of rows){
     const id=Number(row.club_id);if(!Number.isSafeInteger(id)||id<1)continue;
@@ -34,7 +34,6 @@ async function probeChunk(store,ids,depth=0){
   try{
     const payload=await ea('/clubs/info',{platform:PLATFORM,clubIds:ids.join(',')});
     const clubs=await extractClubs(store,payload,PLATFORM);
-    const foundIds=new Set(clubs.map(c=>String(c.id)));
     await mark(store,ids,'done');
     for(const c of clubs){
       await store.pool.query(`UPDATE club_id_probe SET state='found',last_run=EXTRACT(EPOCH FROM NOW())::bigint WHERE platform=$1 AND club_id=$2`,[PLATFORM,String(c.id)]);
