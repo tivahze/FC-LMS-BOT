@@ -13,5 +13,11 @@ Store.prototype.init=async function(){
       GROUP BY platform,LOWER(TRIM(COALESCE(match_type,''))),LEAST(LOWER(TRIM(home_name))||':'||home_goals,LOWER(TRIM(away_name))||':'||away_goals),GREATEST(LOWER(TRIM(home_name))||':'||home_goals,LOWER(TRIM(away_name))||':'||away_goals)
       HAVING COUNT(*)>1 ORDER BY COUNT(*) DESC LIMIT 20`);
     console.log('[MATCH-DIAG] '+JSON.stringify(rows));
+    const p=await this.q(`SELECT m.uid,m.match_id,m.ts,COUNT(mp.uid)::int player_count,
+      STRING_AGG(COALESCE(mp.club_id,'')||':'||COALESCE(mp.player_id,'')||':'||COALESCE(mp.position,'')||':'||mp.goals||':'||mp.assists||':'||ROUND(mp.rating::numeric,2),'|' ORDER BY mp.club_id,mp.player_id) player_signature
+      FROM matches m LEFT JOIN match_players mp ON mp.match_uid=m.uid
+      WHERE m.uid IN('FC26:common-gen5:2970004970141','FC26:common-gen5:2970004920067')
+      GROUP BY m.uid,m.match_id,m.ts ORDER BY m.ts`);
+    console.log('[NEWTEAM-3-5-DIAG] '+JSON.stringify(p));
   }catch(e){console.warn('[MATCH-DIAG]',e.message)}
 };
