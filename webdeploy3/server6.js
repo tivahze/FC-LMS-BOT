@@ -10,5 +10,6 @@ import './v8quality12.js';
 import './v8player13.js';
 import './v9data14.js';
 import './sorting16.js';
+import './v10features17.js';
 import './v9selftest15.js';
 await import('./server5.js');
