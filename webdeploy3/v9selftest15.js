@@ -9,6 +9,10 @@ setTimeout(async()=>{
     const pair=await s.one(`SELECT platform,LEAST(home_club_id,away_club_id) a,GREATEST(home_club_id,away_club_id) b,COUNT(*) c FROM matches WHERE home_club_id<>'' AND away_club_id<>'' GROUP BY 1,2,3 HAVING COUNT(*)>1 ORDER BY c DESC LIMIT 1`);
     const h2h=pair?await s.v9H2H(pair.platform,pair.a,pair.b):null;
     const admin=await s.v9Admin();
-    console.log(`[V9-SELFTEST] ok live=${live.length} records=${records?.goalsMatch?1:0} match=${detail?.match?.match_id||'none'} players=${detail?.players?.length||0} h2h=${h2h?.summary?.games||0} db=${admin?.size?.pretty||'unknown'}`);
+    const clubsDesc=await s.paged('clubs','','','skill:desc',1,10),clubsAsc=await s.paged('clubs','','','skill:asc',1,10);
+    const playersDesc=await s.v8Rankings('player','goals:desc','',0,1,10),playersAsc=await s.v8Rankings('player','goals:asc','',0,1,10);
+    const cd=Number(clubsDesc.items?.[0]?.skill||0),ca=Number(clubsAsc.items?.[0]?.skill||0),pd=Number(playersDesc.items?.[0]?.goals||0),pa=Number(playersAsc.items?.[0]?.goals||0);
+    if(cd<ca||pd<pa)throw new Error(`sorting check failed clubs ${cd}<${ca} players ${pd}<${pa}`);
+    console.log(`[V9-SELFTEST] ok live=${live.length} records=${records?.goalsMatch?1:0} match=${detail?.match?.match_id||'none'} players=${detail?.players?.length||0} h2h=${h2h?.summary?.games||0} sort=clubs:${cd}/${ca},players:${pd}/${pa} db=${admin?.size?.pretty||'unknown'}`);
   }catch(e){console.error('[V9-SELFTEST] FAILED',e.stack||e.message)}finally{try{if(s.mode==='postgres')await s.pool.end()}catch{}}
 },5000).unref();
