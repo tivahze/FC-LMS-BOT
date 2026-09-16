@@ -1,0 +1,53 @@
+import {Store} from './store5.js';
+import {num} from './constants.js';
+
+const oldPaged=Store.prototype.paged;
+const oldRankings=Store.prototype.v8Rankings;
+const oldPlayer=Store.prototype.player;
+const oldClub=Store.prototype.clubAdvanced;
+const oldMatch=Store.prototype.v9Match;
+const playerPosition=`CASE WHEN raw_json IS NOT NULL AND raw_json<>'' THEN COALESCE(raw_json::jsonb->>'position',raw_json::jsonb->>'proPosition',raw_json::jsonb->>'positionName',raw_json::jsonb->>'role','') ELSE '' END`;
+const clamp=(v,a=0,b=100)=>Math.max(a,Math.min(b,Number(v||0)));
+const specOf=(s,fallback='games:desc')=>{const parts=String(s||fallback).split('|'),[key,rawDir]=parts.shift().split(':'),filters={};for(const x of parts){const i=x.indexOf('=');if(i>0)filters[x.slice(0,i)]=x.slice(i+1)}return{key:key||fallback.split(':')[0],dir:rawDir==='asc'?'ASC':'DESC',dirName:rawDir==='asc'?'asc':'desc',filters}};
+const roleSql=(role,expr)=>({gk:`${expr} ~* '(goal|keeper|^gk$)'`,def:`${expr} ~* '(def|back|cb|lb|rb|lwb|rwb)'`,mid:`${expr} ~* '(mid|cm|cdm|cam|lm|rm)'`,fwd:`${expr} ~* '(forw|attack|striker|wing|st|lw|rw|cf)'`}[role]||'TRUE');
+const safeNum=(v,min=0,max=1e9)=>Math.max(min,Math.min(max,Number(v||0)||0));
+
+Store.prototype.paged=async function(table,q,p,sort,page,limit){
+  const spec=specOf(sort,table==='clubs'?'skill:desc':'games:desc');
+  if(this.mode!=='postgres'||!String(sort||'').includes('|'))return oldPaged.call(this,table,q,p,sort,page,limit);
+  page=Math.max(1,num(page)||1);limit=Math.min(100,Math.max(10,num(limit)||50));const offset=(page-1)*limit,pat=`%${q||''}%`,f=spec.filters;
+  if(table==='clubs'){
+    const exprs={name:'name',platform:'platform',skill:'skill',games:'games',wins:'wins',draws:'draws',losses:'losses',winrate:`CASE WHEN games>0 THEN wins::double precision/games*100 ELSE 0 END`,recent:'updated_at'};const expr=exprs[spec.key]||exprs.skill;
+    const minGames=safeNum(f.mg,0,100000),minSkill=safeNum(f.ms,0,100000),minWr=safeNum(f.mw,0,100),days=safeNum(f.ad,0,3650);
+    const cond=`($1='' OR platform=$1) AND ($2='' OR name_norm LIKE $3) AND games>=${minGames} AND skill>=${minSkill} AND (CASE WHEN games>0 THEN wins::double precision/games*100 ELSE 0 END)>=${minWr}${days?` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`:''}`;
+    const total=num((await this.one(`SELECT COUNT(*) c FROM clubs WHERE ${cond}`,[p||'',q||'',pat]))?.c);
+    const items=await this.q(`SELECT platform,club_id,name,skill,wins,draws,losses,games,updated_at FROM clubs WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $4 OFFSET $5`,[p||'',q||'',pat,limit,offset]);return{total,items};
+  }
+  const exprs={name:'name',club:'club_name',platform:'platform',position:playerPosition,rating:'rating',games:'games',goals:'goals',assists:'assists',contributions:'(goals+assists)',recent:'updated_at'};const expr=exprs[spec.key]||exprs.games;
+  const minGames=safeNum(f.mg,0,100000),minRating=safeNum(f.mr,0,10),minGoals=safeNum(f.mb,0,100000),minAssists=safeNum(f.ma,0,100000),days=safeNum(f.ad,0,3650),role=['gk','def','mid','fwd'].includes(f.pos)?f.pos:'',club=String(f.club||'').trim().toLowerCase();
+  const params=[p||'',q||'',pat];let cond=`($1='' OR platform=$1) AND ($2='' OR name_norm LIKE $3) AND games>=${minGames} AND rating>=${minRating} AND goals>=${minGoals} AND assists>=${minAssists}`;
+  if(role)cond+=` AND ${roleSql(role,playerPosition)}`;if(days)cond+=` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`;if(club){params.push(`%${club}%`);cond+=` AND lower(COALESCE(club_name,'')) LIKE $${params.length}`}
+  const total=num((await this.one(`SELECT COUNT(*) c FROM players WHERE ${cond}`,params))?.c);params.push(limit,offset);const lp=params.length-1,op=params.length;
+  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,${playerPosition} position FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $${lp} OFFSET $${op}`,params);return{total,items};
+};
+
+Store.prototype.v8Rankings=async function(type='player',metric='goals:desc',platform='',minGames=3,page=1,limit=50){
+  const s=specOf(metric,type==='club'?'skill:desc':'goals:desc'),recentPlayer=['form10','rating10','goals10','assists10','contrib10','games10'],recentClub=['form10','wins10','gd10','gf10','games10'];
+  if(this.mode!=='postgres'||(type==='club'?!recentClub.includes(s.key):!recentPlayer.includes(s.key)))return oldRankings.call(this,type,metric,platform,minGames,page,limit);
+  page=Math.max(1,num(page)||1);limit=Math.min(100,Math.max(10,num(limit)||50));minGames=Math.min(10,Math.max(0,num(minGames)));const offset=(page-1)*limit;
+  if(type==='player'){
+    const metricExpr={form10:'form10',rating10:'rating10',goals10:'goals10',assists10:'assists10',contrib10:'contrib10',games10:'games10'}[s.key];
+    const rows=await this.q(`WITH r AS (SELECT mp.platform,mp.player_id,mp.rating,mp.goals,mp.assists,m.ts,ROW_NUMBER() OVER(PARTITION BY mp.platform,mp.player_id ORDER BY m.ts DESC) rn FROM match_players mp JOIN matches m ON m.uid=mp.match_uid WHERE($1='' OR mp.platform=$1)),a AS (SELECT platform,player_id,COUNT(*) games10,AVG(NULLIF(rating,0)) rating10,SUM(goals) goals10,SUM(assists) assists10,SUM(goals+assists) contrib10 FROM r WHERE rn<=10 GROUP BY platform,player_id),x AS (SELECT p.platform,p.player_id,p.name,p.club_id,p.club_name,p.games,p.goals,p.assists,p.rating,p.raw_json,${playerPosition.replaceAll('raw_json','p.raw_json')} position,a.games10,a.rating10,a.goals10,a.assists10,a.contrib10,LEAST(100,GREATEST(0,COALESCE(a.rating10,0)*7+LEAST(2,a.contrib10::double precision/GREATEST(a.games10,1))*10+a.games10)) form10 FROM a JOIN players p ON p.platform=a.platform AND p.player_id=a.player_id WHERE a.games10>=$2) SELECT *,COUNT(*) OVER() total_count FROM x ORDER BY ${metricExpr} ${s.dir} NULLS LAST,games10 DESC,name ASC LIMIT $3 OFFSET $4`,[platform,minGames,limit,offset]);const total=num(rows[0]?.total_count);return{type:'player',metric:s.key,dir:s.dirName,page,pages:Math.max(1,Math.ceil(total/limit)),total,items:rows};
+  }
+  const metricExpr={form10:'form10',wins10:'wins10',gd10:'gd10',gf10:'gf10',games10:'games10'}[s.key];
+  const rows=await this.q(`WITH sides AS (SELECT platform,home_club_id club_id,home_name club_name,ts,home_goals gf,away_goals ga FROM matches WHERE($1='' OR platform=$1) UNION ALL SELECT platform,away_club_id,away_name,ts,away_goals,home_goals FROM matches WHERE($1='' OR platform=$1)),r AS (SELECT *,ROW_NUMBER() OVER(PARTITION BY platform,club_id ORDER BY ts DESC) rn FROM sides WHERE club_id<>''),a AS (SELECT platform,club_id,MAX(club_name) club_name,COUNT(*) games10,COUNT(*) FILTER(WHERE gf>ga) wins10,COUNT(*) FILTER(WHERE gf=ga) draws10,SUM(gf) gf10,SUM(ga) ga10,SUM(gf-ga) gd10 FROM r WHERE rn<=10 GROUP BY platform,club_id),x AS (SELECT c.platform,c.club_id,c.name,c.skill,c.games,c.wins,c.draws,c.losses,a.games10,a.wins10,a.draws10,a.gf10,a.ga10,a.gd10,LEAST(100,GREATEST(0,((a.wins10*3+a.draws10)::double precision/GREATEST(a.games10*3,1))*75+((LEAST(3,GREATEST(-3,a.gd10::double precision/GREATEST(a.games10,1)))+3)/6)*25)) form10 FROM a JOIN clubs c ON c.platform=a.platform AND c.club_id=a.club_id WHERE a.games10>=$2) SELECT *,COUNT(*) OVER() total_count FROM x ORDER BY ${metricExpr} ${s.dir} NULLS LAST,games10 DESC,name ASC LIMIT $3 OFFSET $4`,[platform,minGames,limit,offset]);const total=num(rows[0]?.total_count);return{type:'club',metric:s.key,dir:s.dirName,page,pages:Math.max(1,Math.ceil(total/limit)),total,items:rows};
+};
+
+Store.prototype.player=async function(platform,id){const r=await oldPlayer.call(this,platform,id);if(!r)return r;const a=r.advanced||{},recent=(r.recent||[]).slice(0,30),last10=recent.slice(0,10),valid=last10.filter(x=>num(x.rating)>0),avg=valid.length?valid.reduce((s,x)=>s+num(x.rating),0)/valid.length:0,contrib=last10.reduce((s,x)=>s+num(x.goals)+num(x.assists),0),formIndex=Math.round(clamp(avg*7+Math.min(2,contrib/Math.max(1,last10.length))*10+last10.length));const best=[...valid].sort((x,y)=>num(y.rating)-num(x.rating))[0]||null,worst=[...valid].sort((x,y)=>num(x.rating)-num(y.rating))[0]||null,cut=Math.floor(Date.now()/1000)-30*86400,last30=recent.filter(x=>num(x.ts)>=cut);let benchmark={};if(this.mode==='postgres'){const pos=String(r.player?.position||a.roles?.[0]?.name||'').trim();if(pos)benchmark=await this.one(`SELECT COUNT(*) sample,AVG(rating) avg_rating,SUM(goals)::double precision/GREATEST(COUNT(*),1) gpg,SUM(assists)::double precision/GREATEST(COUNT(*),1) apg FROM match_players WHERE platform=$1 AND lower(position)=lower($2) AND rating>0`,[platform,pos])||{}}
+  r.advanced={...a,v10:{formIndex,bestMatch:best,worstMatch:worst,last30:{games:last30.length,goals:last30.reduce((s,x)=>s+num(x.goals),0),assists:last30.reduce((s,x)=>s+num(x.assists),0),avgRating:last30.filter(x=>num(x.rating)>0).length?last30.filter(x=>num(x.rating)>0).reduce((s,x)=>s+num(x.rating),0)/last30.filter(x=>num(x.rating)>0).length:0},benchmark,provenance:{career:'EA',recent:'Archivé par FC Clubs Global',formIndex:'Calculé par FC Clubs Global'}}};return r};
+
+Store.prototype.clubAdvanced=async function(platform,id){const r=await oldClub.call(this,platform,id);if(!r)return r;const a=r.advanced||{},x=a.recent10||{},games=num(x.games),points=num(x.wins)*3+num(x.draws),gdpg=games?num(x.gd)/games:0,formIndex=Math.round(clamp((games?points/(games*3):0)*75+((Math.max(-3,Math.min(3,gdpg))+3)/6)*25));r.advanced={...a,v10:{formIndex,provenance:{clubStats:'EA',matches:'Archivé par FC Clubs Global',formIndex:'Calculé par FC Clubs Global'}}};return r};
+
+Store.prototype.v9Match=async function(platform,matchId){const r=await oldMatch.call(this,platform,matchId);if(!r)return r;const sum=xs=>({players:xs.length,goals:xs.reduce((s,x)=>s+num(x.goals),0),assists:xs.reduce((s,x)=>s+num(x.assists),0),avgRating:xs.filter(x=>num(x.rating)>0).length?xs.filter(x=>num(x.rating)>0).reduce((s,x)=>s+num(x.rating),0)/xs.filter(x=>num(x.rating)>0).length:0});let h2h=null;try{h2h=await this.v9H2H(platform,r.match.home_club_id,r.match.away_club_id)}catch{}return{...r,teamSummary:{home:sum(r.homePlayers||[]),away:sum(r.awayPlayers||[])},h2h:h2h?.summary||null,provenance:{score:'EA match payload',players:'EA match payload archivé',motm:'Calculé sur les joueurs observés',h2h:'Calculé depuis notre archive'}}};
+
+console.log('[V10] advanced filters, recent form, benchmarks and provenance ready');
