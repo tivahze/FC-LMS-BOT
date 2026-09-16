@@ -48,7 +48,7 @@ Store.prototype.v8Stats=async function(){
   const [d,q,l]=await Promise.all([
     this.dashboard(),
     this.one(`SELECT
-      (SELECT COUNT(*) FROM clubs WHERE name='' OR lower(name) LIKE 'club #% ' OR lower(name) LIKE 'nom du club indisponible%') unresolved_clubs,
+      (SELECT COUNT(*) FROM clubs WHERE name='' OR lower(name) LIKE 'club #% ' OR lower(name) LIKE 'nom du club indisponible%' OR lower(name)='club inconnu') unresolved_clubs,
       (SELECT COUNT(*) FROM (SELECT platform,club_id,name_norm FROM players WHERE name_norm<>'' GROUP BY platform,club_id,name_norm HAVING COUNT(*)>1) x) duplicate_player_groups,
       (SELECT COUNT(*) FROM match_players mp LEFT JOIN matches m ON m.uid=mp.match_uid WHERE m.uid IS NULL) orphan_appearances`),
     this.one(`SELECT COALESCE((SELECT MAX(ts) FROM matches),0) latest_match,COALESCE(GREATEST((SELECT MAX(updated_at) FROM clubs),(SELECT MAX(updated_at) FROM players)),0) latest_update`)
