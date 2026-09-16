@@ -17,7 +17,11 @@ const files={
   '/fr/player':['player.html','text/html; charset=utf-8'],
   '/fr/player/':['player.html','text/html; charset=utf-8'],
   '/player-page.css':['player-page.css','text/css; charset=utf-8'],
-  '/player-page.js':['player-page.js','application/javascript; charset=utf-8']
+  '/player-page.js':['player-page.js','application/javascript; charset=utf-8'],
+  '/fr/club':['club.html','text/html; charset=utf-8'],
+  '/fr/club/':['club.html','text/html; charset=utf-8'],
+  '/club-page.css':['club-page.css','text/css; charset=utf-8'],
+  '/club-page.js':['club-page.js','application/javascript; charset=utf-8']
 };
 const label=x=>({...x,platform_label:LABEL[x.platform]||x.platform});
 const page=u=>{const p=Math.max(1,Number(u.searchParams.get('page')||1)),limit=Math.min(60,Math.max(12,Number(u.searchParams.get('limit')||30)));return{p,limit}};
