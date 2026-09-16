@@ -8,4 +8,5 @@ import './v8features.js';
 import './v8enhance11.js';
 import './v8quality12.js';
 import './v8player13.js';
+import './v9data14.js';
 await import('./server5.js');
