@@ -2,149 +2,17 @@ import {Store} from './store5.js';
 import {ea,normalizeMatches} from './crawler5.js';
 import {MATCH_TYPES,sleep,gap,num} from './constants.js';
 
-// EA exposes only the 10 most recent matches per type. The only reliable way to
-// build a long history is to poll clubs repeatedly and persist each unique EA match id.
 const POLL_MINUTES=Math.max(5,Number(process.env.HISTORY_POLL_MINUTES||10));
 const POLL_BATCH=Math.max(5,Number(process.env.HISTORY_POLL_BATCH||35));
 const ACTIVE_DAYS=Math.max(1,Number(process.env.HISTORY_ACTIVE_DAYS||14));
+const COLD_HOURS=Math.max(2,Number(process.env.HISTORY_COLD_HOURS||6));
 const active=new Set();
-
-const validClubName=name=>{
-  const s=String(name||'').trim();
-  return !!s&&!/^club\s*#?\d*$/i.test(s)&&!/nom du club indisponible/i.test(s);
-};
-
-async function ensureWatched(store,platform,clubId,name='',viewed=false){
-  if(store.mode!=='postgres'||!platform||!clubId)return;
-  const nowExpr='EXTRACT(EPOCH FROM NOW())::BIGINT';
-  const lastViewed=viewed?nowExpr:'0';
-  await store.pool.query(`INSERT INTO watched_clubs(platform,club_id,name,last_viewed,last_polled,first_seen)
-    VALUES($1,$2,$3,${lastViewed},0,${nowExpr})
-    ON CONFLICT(platform,club_id) DO UPDATE SET
-      name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE watched_clubs.name END,
-      last_viewed=CASE WHEN ${viewed?'TRUE':'FALSE'} THEN ${nowExpr} ELSE watched_clubs.last_viewed END`,
-    [platform,String(clubId),String(name||'')]);
-}
-
-async function saveMatches(store,platform,clubId,clubName,type){
-  const payload=await ea('/clubs/matches',{platform,clubIds:String(clubId),matchType:type,maxResultCount:10});
-  const matches=normalizeMatches(payload,type);
-  let insertedOrSeen=0;
-  for(const m of matches){
-    for(const c of [m.home,m.away]){
-      if(String(c.id)===String(clubId)&&!c.name)c.name=clubName||'';
-      if(c.id){
-        if(validClubName(c.name))await store.upsertClub({id:c.id,name:c.name,raw:c},platform);
-        await ensureWatched(store,platform,c.id,c.name||'',false);
-      }
-    }
-    for(const x of m.players||[])await store.upsertPlayer({id:x.id,name:x.name,rating:x.rating,raw:x.raw},platform,x.clubId,x.clubName);
-    await store.upsertMatch(m,platform);
-    insertedOrSeen++;
-  }
-  return insertedOrSeen;
-}
-
-async function pollOne(store,row){
-  const key=`${row.platform}|${row.club_id}`;
-  if(active.has(key))return 0;
-  active.add(key);
-  let total=0;
-  try{
-    for(const type of MATCH_TYPES){
-      try{total+=await saveMatches(store,row.platform,row.club_id,row.name,type)}
-      catch(e){console.warn(`[HISTORY] ${key}/${type}: ${e.message}`)}
-      await sleep(gap());
-    }
-    if(store.mode==='postgres')await store.pool.query(`UPDATE watched_clubs SET last_polled=EXTRACT(EPOCH FROM NOW())::BIGINT WHERE platform=$1 AND club_id=$2`,[row.platform,String(row.club_id)]);
-    console.log(`[HISTORY] ${key} fetched=${total}`);
-  }finally{active.delete(key)}
-  return total;
-}
-
-async function pollWatched(store){
-  if(store.mode!=='postgres')return;
-  const staleBefore=Math.floor(Date.now()/1000)-POLL_MINUTES*60;
-  const activeAfter=Math.floor(Date.now()/1000)-ACTIVE_DAYS*86400;
-  const rows=await store.q(`
-    SELECT w.platform,w.club_id,w.name,w.last_viewed,w.last_polled,
-      COALESCE(MAX(m.ts),0) latest_match
-    FROM watched_clubs w
-    LEFT JOIN matches m ON m.platform=w.platform AND (m.home_club_id=w.club_id OR m.away_club_id=w.club_id)
-    WHERE COALESCE(w.last_polled,0)<$1
-    GROUP BY w.platform,w.club_id,w.name,w.last_viewed,w.last_polled
-    ORDER BY
-      CASE WHEN COALESCE(MAX(m.ts),0)>$2 THEN 0 ELSE 1 END,
-      CASE WHEN w.last_viewed>$2 THEN 0 ELSE 1 END,
-      COALESCE(w.last_polled,0) ASC,
-      COALESCE(MAX(m.ts),0) DESC
-    LIMIT $3`,[staleBefore,activeAfter,POLL_BATCH]);
-  for(const row of rows){await pollOne(store,row);await sleep(gap())}
-}
-
-const previousInit=Store.prototype.init;
-Store.prototype.init=async function(){
-  await previousInit.call(this);
-  if(this.mode!=='postgres')return;
-  await this.pool.query(`
-    CREATE TABLE IF NOT EXISTS watched_clubs(
-      platform TEXT NOT NULL,
-      club_id TEXT NOT NULL,
-      name TEXT DEFAULT '',
-      last_viewed BIGINT DEFAULT 0,
-      last_polled BIGINT DEFAULT 0,
-      first_seen BIGINT DEFAULT 0,
-      PRIMARY KEY(platform,club_id)
-    );
-    ALTER TABLE watched_clubs ADD COLUMN IF NOT EXISTS first_seen BIGINT DEFAULT 0;
-    CREATE INDEX IF NOT EXISTS watched_clubs_poll_idx ON watched_clubs(last_polled,last_viewed);
-    INSERT INTO watched_clubs(platform,club_id,name,last_viewed,last_polled,first_seen)
-      SELECT platform,club_id,name,0,0,EXTRACT(EPOCH FROM NOW())::BIGINT FROM clubs
-      ON CONFLICT(platform,club_id) DO UPDATE SET name=EXCLUDED.name;
-  `);
-  const tracked=await this.one('SELECT COUNT(*) c FROM watched_clubs');
-  console.log(`[HISTORY] global tracking enabled for ${num(tracked?.c)} clubs; batch=${POLL_BATCH}; every=${POLL_MINUTES}m`);
-  setTimeout(()=>pollWatched(this).catch(e=>console.warn('[HISTORY]',e.message)),12000).unref();
-  setInterval(()=>pollWatched(this).catch(e=>console.warn('[HISTORY]',e.message)),POLL_MINUTES*60000).unref();
-};
-
-// Every club discovered by search, leaderboard or an opponent match is automatically
-// enrolled in rolling history tracking.
-const previousUpsertClub=Store.prototype.upsertClub;
-Store.prototype.upsertClub=async function(x,platform){
-  await previousUpsertClub.call(this,x,platform);
-  if(this.mode==='postgres'&&x?.id)await ensureWatched(this,platform,x.id,x.name||'',false);
-};
-
-const previousClubAdvanced=Store.prototype.clubAdvanced;
-Store.prototype.clubAdvanced=async function(platform,id){
-  let result=await previousClubAdvanced.call(this,platform,id);
-  if(!result||this.mode!=='postgres')return result;
-  const name=String(result.club?.name||'');
-  await ensureWatched(this,platform,id,name,true);
-  const watch=await this.one('SELECT last_polled,first_seen FROM watched_clubs WHERE platform=$1 AND club_id=$2',[platform,String(id)]);
-  if(!num(watch?.last_polled)||num(watch.last_polled)<Math.floor(Date.now()/1000)-POLL_MINUTES*60){
-    await pollOne(this,{platform,club_id:String(id),name});
-    result=await previousClubAdvanced.call(this,platform,id);
-  }
-  const meta=await this.one(`SELECT COUNT(*) c,MIN(ts) oldest,MAX(ts) newest FROM matches WHERE platform=$1 AND(home_club_id=$2 OR away_club_id=$2)`,[platform,String(id)]);
-  result.history={
-    tracking:true,
-    globalTracking:true,
-    pollMinutes:POLL_MINUTES,
-    archivedCount:num(meta?.c),
-    oldest:num(meta?.oldest),
-    newest:num(meta?.newest),
-    firstSeen:num(watch?.first_seen),
-    eaWindowPerType:10
-  };
-  return result;
-};
-
-const previousDashboard=Store.prototype.dashboard;
-Store.prototype.dashboard=async function(){
-  const d=await previousDashboard.call(this);
-  if(this.mode!=='postgres')return d;
-  const w=await this.one(`SELECT COUNT(*) tracked,COUNT(*) FILTER(WHERE last_polled>0) polled FROM watched_clubs`);
-  return{...d,trackedClubs:num(w?.tracked),polledClubs:num(w?.polled),historyPollMinutes:POLL_MINUTES};
-};
+const validClubName=name=>{const s=String(name||'').trim();return !!s&&!/^club\s*#?\d*$/i.test(s)&&!/nom du club indisponible/i.test(s)};
+async function ensureWatched(store,platform,clubId,name='',viewed=false){if(store.mode!=='postgres'||!platform||!clubId)return;const nowExpr='EXTRACT(EPOCH FROM NOW())::BIGINT',lastViewed=viewed?nowExpr:'0';await store.pool.query(`INSERT INTO watched_clubs(platform,club_id,name,last_viewed,last_polled,first_seen) VALUES($1,$2,$3,${lastViewed},0,${nowExpr}) ON CONFLICT(platform,club_id) DO UPDATE SET name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE watched_clubs.name END,last_viewed=CASE WHEN ${viewed?'TRUE':'FALSE'} THEN ${nowExpr} ELSE watched_clubs.last_viewed END`,[platform,String(clubId),String(name||'')])}
+async function saveMatches(store,platform,clubId,clubName,type){const payload=await ea('/clubs/matches',{platform,clubIds:String(clubId),matchType:type,maxResultCount:10}),matches=normalizeMatches(payload,type);let seen=0;for(const m of matches){for(const c of[m.home,m.away]){if(String(c.id)===String(clubId)&&!c.name)c.name=clubName||'';if(c.id){if(validClubName(c.name))await store.upsertClub({id:c.id,name:c.name,raw:c},platform);await ensureWatched(store,platform,c.id,c.name||'',false)}}for(const x of m.players||[])await store.upsertPlayer({id:x.id,name:x.name,rating:x.rating,raw:x.raw},platform,x.clubId,x.clubName);await store.upsertMatch(m,platform);seen++}return seen}
+async function pollOne(store,row){const key=`${row.platform}|${row.club_id}`;if(active.has(key))return 0;active.add(key);let total=0;try{for(const type of MATCH_TYPES){try{total+=await saveMatches(store,row.platform,row.club_id,row.name,type)}catch(e){console.warn(`[HISTORY] ${key}/${type}: ${e.message}`)}await sleep(gap())}if(store.mode==='postgres')await store.pool.query(`UPDATE watched_clubs SET last_polled=EXTRACT(EPOCH FROM NOW())::BIGINT WHERE platform=$1 AND club_id=$2`,[row.platform,String(row.club_id)]);console.log(`[HISTORY] ${key} fetched=${total}`)}finally{active.delete(key)}return total}
+async function pollWatched(store){if(store.mode!=='postgres')return;const now=Math.floor(Date.now()/1000),staleBefore=now-POLL_MINUTES*60,activeAfter=now-ACTIVE_DAYS*86400,coldBefore=now-COLD_HOURS*3600;const rows=await store.q(`SELECT w.platform,w.club_id,w.name,w.last_viewed,w.last_polled,COALESCE(MAX(m.ts),0) latest_match FROM watched_clubs w LEFT JOIN matches m ON m.platform=w.platform AND (m.home_club_id=w.club_id OR m.away_club_id=w.club_id) GROUP BY w.platform,w.club_id,w.name,w.last_viewed,w.last_polled HAVING COALESCE(w.last_polled,0)<$1 AND (COALESCE(MAX(m.ts),0)>$2 OR w.last_viewed>$2 OR COALESCE(w.last_polled,0)<$4) ORDER BY CASE WHEN w.last_viewed>$2 THEN 0 ELSE 1 END,CASE WHEN COALESCE(MAX(m.ts),0)>$2 THEN 0 ELSE 1 END,COALESCE(w.last_polled,0) ASC,COALESCE(MAX(m.ts),0) DESC LIMIT $3`,[staleBefore,activeAfter,POLL_BATCH,coldBefore]);for(const row of rows){await pollOne(store,row);await sleep(gap())}}
+const previousInit=Store.prototype.init;Store.prototype.init=async function(){await previousInit.call(this);if(this.mode!=='postgres')return;await this.pool.query(`CREATE TABLE IF NOT EXISTS watched_clubs(platform TEXT NOT NULL,club_id TEXT NOT NULL,name TEXT DEFAULT '',last_viewed BIGINT DEFAULT 0,last_polled BIGINT DEFAULT 0,first_seen BIGINT DEFAULT 0,PRIMARY KEY(platform,club_id));ALTER TABLE watched_clubs ADD COLUMN IF NOT EXISTS first_seen BIGINT DEFAULT 0;CREATE INDEX IF NOT EXISTS watched_clubs_poll_idx ON watched_clubs(last_polled,last_viewed);INSERT INTO watched_clubs(platform,club_id,name,last_viewed,last_polled,first_seen) SELECT platform,club_id,name,0,0,EXTRACT(EPOCH FROM NOW())::BIGINT FROM clubs ON CONFLICT(platform,club_id) DO UPDATE SET name=EXCLUDED.name;`);const tracked=await this.one('SELECT COUNT(*) c FROM watched_clubs');console.log(`[HISTORY] smart tracking enabled for ${num(tracked?.c)} clubs; active=${POLL_MINUTES}m cold=${COLD_HOURS}h batch=${POLL_BATCH}`);setTimeout(()=>pollWatched(this).catch(e=>console.warn('[HISTORY]',e.message)),12000).unref();setInterval(()=>pollWatched(this).catch(e=>console.warn('[HISTORY]',e.message)),POLL_MINUTES*60000).unref()};
+const previousUpsertClub=Store.prototype.upsertClub;Store.prototype.upsertClub=async function(x,platform){await previousUpsertClub.call(this,x,platform);if(this.mode==='postgres'&&x?.id)await ensureWatched(this,platform,x.id,x.name||'',false)};
+const previousClubAdvanced=Store.prototype.clubAdvanced;Store.prototype.clubAdvanced=async function(platform,id){let result=await previousClubAdvanced.call(this,platform,id);if(!result||this.mode!=='postgres')return result;const name=String(result.club?.name||'');await ensureWatched(this,platform,id,name,true);const watch=await this.one('SELECT last_polled,first_seen FROM watched_clubs WHERE platform=$1 AND club_id=$2',[platform,String(id)]);if(!num(watch?.last_polled)||num(watch.last_polled)<Math.floor(Date.now()/1000)-POLL_MINUTES*60){await pollOne(this,{platform,club_id:String(id),name});result=await previousClubAdvanced.call(this,platform,id)}const meta=await this.one(`SELECT COUNT(*) c,MIN(ts) oldest,MAX(ts) newest FROM matches WHERE platform=$1 AND(home_club_id=$2 OR away_club_id=$2)`,[platform,String(id)]);result.history={tracking:true,globalTracking:true,pollMinutes:POLL_MINUTES,coldHours:COLD_HOURS,archivedCount:num(meta?.c),oldest:num(meta?.oldest),newest:num(meta?.newest),firstSeen:num(watch?.first_seen),eaWindowPerType:10};return result};
+const previousDashboard=Store.prototype.dashboard;Store.prototype.dashboard=async function(){const d=await previousDashboard.call(this);if(this.mode!=='postgres')return d;const w=await this.one(`SELECT COUNT(*) tracked,COUNT(*) FILTER(WHERE last_polled>0) polled FROM watched_clubs`);return{...d,trackedClubs:num(w?.tracked),polledClubs:num(w?.polled),historyPollMinutes:POLL_MINUTES,historyColdHours:COLD_HOURS}};
