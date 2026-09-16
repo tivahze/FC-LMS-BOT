@@ -18,6 +18,7 @@ Store.prototype.clubAdvanced=async function(platform,id){
   const rows=await this.q(`SELECT ts,home_club_id,home_goals,away_club_id,away_goals FROM matches WHERE platform=$1 AND(home_club_id=$2 OR away_club_id=$2) ORDER BY ts DESC LIMIT 100`,[platform,String(id)]);
   const calc=(list,homeSide)=>{let wins=0,draws=0,losses=0,gf=0,ga=0;for(const m of list){const home=String(m.home_club_id)===String(id),a=home?num(m.home_goals):num(m.away_goals),b=home?num(m.away_goals):num(m.home_goals);gf+=a;ga+=b;if(a>b)wins++;else if(a===b)draws++;else losses++}const games=list.length;return{games,wins,draws,losses,gf,ga,winRate:games?wins/games*100:0,gfAvg:games?gf/games:0,gaAvg:games?ga/games:0,side:homeSide?'home':'away'}};
   const home=rows.filter(m=>String(m.home_club_id)===String(id)),away=rows.filter(m=>String(m.away_club_id)===String(id));
-  r.advanced={...(r.advanced||{}),home:calc(home,true),away:calc(away,false)};
+  const trend=rows.map(m=>{const isHome=String(m.home_club_id)===String(id),gf=isHome?num(m.home_goals):num(m.away_goals),ga=isHome?num(m.away_goals):num(m.home_goals);return{ts:num(m.ts),gf,ga,gd:gf-ga,result:gf>ga?'V':gf<ga?'D':'N',home:isHome}});
+  r.advanced={...(r.advanced||{}),home:calc(home,true),away:calc(away,false),recent50:calc(rows.slice(0,50),false),trend};
   return r;
 };
