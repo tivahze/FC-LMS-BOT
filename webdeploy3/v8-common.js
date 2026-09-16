@@ -1,0 +1,13 @@
+export const $=s=>document.querySelector(s);
+export const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+export const nf=n=>new Intl.NumberFormat('fr-FR').format(Number(n||0));
+export const f1=n=>Number(n||0)>0?Number(n).toFixed(1):'—';
+export const f2=n=>Number(n||0)>0?Number(n).toFixed(2):'—';
+export const labels={"common-gen5":"Current Gen","common-gen4":"Last Gen",nx:"Switch"};
+export const slug=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,70)||'profil';
+export const playerUrl=p=>`/fr/player/${encodeURIComponent(p.platform)}/${encodeURIComponent(p.player_id)}/${slug(p.name)}`;
+export const clubUrl=c=>`/fr/club/${encodeURIComponent(c.platform)}/${encodeURIComponent(c.club_id)}/${slug(c.name)}`;
+export const initials=n=>String(n||'?').trim().split(/\s+/).slice(0,2).map(x=>x[0]||'').join('').toUpperCase().slice(0,2)||'?';
+export async function get(url,opts){const r=await fetch(url,opts);const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||'Erreur serveur');return d}
+export function relative(ts){const s=Math.max(0,Math.floor(Date.now()/1000)-Number(ts||0));if(!ts)return'—';if(s<60)return'il y a moins d’une minute';if(s<3600)return`il y a ${Math.floor(s/60)} min`;if(s<86400)return`il y a ${Math.floor(s/3600)} h`;return`il y a ${Math.floor(s/86400)} j`}
+export function attachGlobalSearch(input,box){if(!input||!box)return;let timer;input.addEventListener('input',()=>{clearTimeout(timer);const q=input.value.trim();if(q.length<2){box.hidden=true;box.innerHTML='';return}timer=setTimeout(async()=>{try{const r=await get(`/api/v8/search?q=${encodeURIComponent(q)}&limit=6`),items=[];for(const p of r.players||[])items.push(`<a class="suggestion" href="${playerUrl(p)}"><div class="avatar">${esc(initials(p.name))}</div><div><b>${esc(p.name)}</b><div class="small muted">Joueur • ${esc(p.club_name||'Sans club')} • ${esc(labels[p.platform]||p.platform)}</div></div><span class="badge">Joueur</span></a>`);for(const c of r.clubs||[])items.push(`<a class="suggestion" href="${clubUrl(c)}"><div class="crest">${esc(initials(c.name))}</div><div><b>${esc(c.name)}</b><div class="small muted">Club • ${esc(labels[c.platform]||c.platform)} • ${nf(c.games)} matchs</div></div><span class="badge">Club</span></a>`);box.innerHTML=items.join('')||'<div class="empty">Aucun résultat</div>';box.hidden=false}catch{box.hidden=true}},180)});document.addEventListener('click',e=>{if(e.target!==input&&!box.contains(e.target))box.hidden=true})}
