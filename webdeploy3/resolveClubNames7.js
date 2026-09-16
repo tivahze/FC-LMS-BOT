@@ -3,6 +3,7 @@ import {ea,extractClubs} from './crawler5.js';
 import {norm,sleep} from './constants.js';
 
 const isPlaceholder=name=>/^club\s*#\d+$/i.test(String(name||'').trim())||/^club$/i.test(String(name||'').trim());
+const publicName=(name,id)=>isPlaceholder(name)?`Nom du club indisponible${id?` (ID ${id})`:''}`:String(name||'Club inconnu');
 
 async function applyResolvedName(store,platform,clubId,name){
   if(!name||isPlaceholder(name))return false;
@@ -28,7 +29,7 @@ async function resolvePlaceholders(store,limit=50){
   if(store.mode!=='postgres')return {found:0,resolved:0};
   const rows=await store.q(`SELECT platform,club_id,name FROM clubs WHERE LOWER(TRIM(name))='club' OR name ~* '^club #[0-9]+$' ORDER BY updated_at DESC LIMIT $1`,[limit]);
   let resolved=0;
-  for(const r of rows){if(await resolveOne(store,r.platform,r.club_id))resolved++;await sleep(250)}
+  for(const r of rows){if(await resolveOne(store,r.platform,r.club_id))resolved++;await sleep(150)}
   console.log(`[CLUB-NAME-RESOLVER] found=${rows.length} resolved=${resolved} unresolved=${rows.length-resolved}`);
   return{found:rows.length,resolved};
 }
@@ -36,7 +37,7 @@ async function resolvePlaceholders(store,limit=50){
 const previousInit=Store.prototype.init;
 Store.prototype.init=async function(){
   await previousInit.call(this);
-  if(this.mode==='postgres')await resolvePlaceholders(this,50);
+  if(this.mode==='postgres')setTimeout(()=>resolvePlaceholders(this,50).catch(e=>console.warn('[CLUB-NAME-RESOLVER]',e.message)),1500).unref();
 };
 
 const previousClubAdvanced=Store.prototype.clubAdvanced;
@@ -49,7 +50,11 @@ Store.prototype.clubAdvanced=async function(platform,id){
     if(isPlaceholder(m.away_name)&&m.away_club_id)unresolved.set(String(m.away_club_id),m.away_name);
   }
   let changed=false;
-  for(const clubId of [...unresolved.keys()].slice(0,12)){if(await resolveOne(this,platform,clubId))changed=true;await sleep(200)}
+  for(const clubId of [...unresolved.keys()].slice(0,8)){if(await resolveOne(this,platform,clubId))changed=true;await sleep(100)}
   if(changed)r=await previousClubAdvanced.call(this,platform,id);
+
+  r.matches=(r.matches||[]).map(m=>({...m,home_name:publicName(m.home_name,m.home_club_id),away_name:publicName(m.away_name,m.away_club_id)}));
+  r.curve=(r.curve||[]).map(x=>({...x,opponent:publicName(x.opponent,x.opponent_id),home_name:publicName(x.home_name,x.home_club_id),away_name:publicName(x.away_name,x.away_club_id)}));
+  r.opponents=(r.opponents||[]).map(o=>({...o,name:publicName(o.name,o.id)}));
   return r;
 };
