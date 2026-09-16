@@ -7,7 +7,7 @@ const INTERVAL_MINUTES=Math.max(5,Number(process.env.DISCOVERY_INTERVAL_MINUTES|
 const BATCH=Math.max(20,Number(process.env.DISCOVERY_BATCH||100));
 const MAX_DEPTH=Math.min(5,Math.max(2,Number(process.env.DISCOVERY_MAX_DEPTH||4)));
 const EXPAND_MIN=Math.max(5,Number(process.env.DISCOVERY_EXPAND_MIN||12));
-const active={running:false,processed:0,found:0,expanded:0,lastPrefix:'',lastPlatform:'',lastError:'',started:0};
+const active={running:false,processed:0,found:0,expanded:0,newClubs:0,lastPrefix:'',lastPlatform:'',lastError:'',started:0};
 
 async function seed(store){
   for(const platform of PLATFORMS){
@@ -58,17 +58,22 @@ async function searchPrefix(store,row){
 
 async function cycle(store){
   if(store.mode!=='postgres'||active.running)return;
-  active.running=true;active.processed=0;active.found=0;active.expanded=0;active.lastError='';active.started=Math.floor(Date.now()/1000);
+  active.running=true;active.processed=0;active.found=0;active.expanded=0;active.newClubs=0;active.lastError='';active.started=Math.floor(Date.now()/1000);
   try{
+    const before=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c);
     const rows=await store.q(`SELECT platform,prefix,depth,priority FROM discovery_frontier
       WHERE state='pending'
-      ORDER BY depth ASC,priority DESC,prefix ASC
+      ORDER BY depth ASC,
+        CASE platform WHEN 'common-gen5' THEN 0 WHEN 'common-gen4' THEN 1 ELSE 2 END,
+        priority DESC,prefix ASC
       LIMIT $1`,[BATCH]);
+    console.log(`[DISCOVERY10] cycle start rows=${rows.length} clubsBefore=${before} batch=${BATCH} depth<=${MAX_DEPTH}`);
     for(const row of rows){
       try{await searchPrefix(store,row)}catch(e){
         active.lastError=e.message;
         await store.pool.query(`UPDATE discovery_frontier SET last_run=EXTRACT(EPOCH FROM NOW())::BIGINT,priority=GREATEST(priority-1,0) WHERE platform=$1 AND prefix=$2`,[row.platform,row.prefix]);
       }
+      if(active.processed>0&&active.processed%10===0)console.log(`[DISCOVERY10] progress ${active.processed}/${rows.length} hits=${active.found} prefix=${active.lastPlatform}:${active.lastPrefix}${active.lastError?' lastError='+active.lastError:''}`);
       await sleep(gap());
     }
     const s=await store.one(`SELECT COUNT(*) total,
@@ -76,8 +81,9 @@ async function cycle(store){
       COUNT(*) FILTER(WHERE state='done') done,
       COALESCE(SUM(last_count),0) hits
       FROM discovery_frontier`);
-    const c=await store.one('SELECT COUNT(*) c FROM clubs');
-    console.log(`[DISCOVERY10] processed=${active.processed} hits=${active.found} expanded=${active.expanded} frontier=${num(s?.total)} pending=${num(s?.pending)} done=${num(s?.done)} clubs=${num(c?.c)}${active.lastError?' error='+active.lastError:''}`);
+    const after=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c);
+    active.newClubs=Math.max(0,after-before);
+    console.log(`[DISCOVERY10] done processed=${active.processed} hits=${active.found} newClubs=${active.newClubs} expanded=${active.expanded} frontier=${num(s?.total)} pending=${num(s?.pending)} done=${num(s?.done)} clubs=${after}${active.lastError?' error='+active.lastError:''}`);
   }finally{active.running=false}
 }
 
@@ -97,6 +103,8 @@ Store.prototype.init=async function(){
   );
   CREATE INDEX IF NOT EXISTS discovery_frontier_state_idx ON discovery_frontier(state,depth,priority);`);
   await seed(this);
+  const f=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='pending') pending FROM discovery_frontier`);
+  console.log(`[DISCOVERY10] ready frontier=${num(f?.total)} pending=${num(f?.pending)} interval=${INTERVAL_MINUTES}m batch=${BATCH}`);
   setTimeout(()=>cycle(this).catch(e=>console.warn('[DISCOVERY10]',e.message)),20000).unref();
   setInterval(()=>cycle(this).catch(e=>console.warn('[DISCOVERY10]',e.message)),INTERVAL_MINUTES*60000).unref();
 };
