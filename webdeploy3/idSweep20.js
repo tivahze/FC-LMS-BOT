@@ -3,19 +3,84 @@ import {extractClubs,syncClub} from './crawler5.js';
 import {BASE,sleep,gap,num} from './constants.js';
 
 const PLATFORM='common-gen5';
-const INTERVAL_MINUTES=Math.max(5,Number(process.env.ID_SWEEP_INTERVAL_MINUTES||8));
-const BATCH=Math.max(10,Number(process.env.ID_SWEEP_BATCH||30));
-const HYDRATE=Math.max(2,Number(process.env.ID_SWEEP_HYDRATE||8));
-const RADIUS=Math.max(2,Number(process.env.ID_SWEEP_RADIUS||12));
-const state={running:false,probed:0,found:0,newClubs:0,hydrated:0,newPlayers:0,lastId:'',lastError:'',started:0};
+const INTERVAL_MINUTES=Math.max(4,Number(process.env.ID_SWEEP_INTERVAL_MINUTES||6));
+const BATCH=Math.max(15,Number(process.env.ID_SWEEP_BATCH||45));
+const HYDRATE=Math.max(3,Number(process.env.ID_SWEEP_HYDRATE||10));
+const RADIUS=Math.max(4,Number(process.env.ID_SWEEP_RADIUS||18));
+const AHEAD=Math.max(100,Number(process.env.ID_SWEEP_AHEAD||300));
+const state={running:false,probed:0,found:0,newClubs:0,hydrated:0,newPlayers:0,lastId:'',lastError:'',started:0,durationSec:0,clubYieldPct:0,playersPerFound:0};
 const headers={accept:'application/json','accept-language':'fr-FR,fr;q=0.9,en;q=0.8','user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36','sec-fetch-site':'same-origin','sec-fetch-mode':'cors','sec-fetch-dest':'empty','referer':'https://www.ea.com/'};
 
 async function probeEA(ids){const u=new URL(BASE+'/clubs/info');u.searchParams.set('platform',PLATFORM);u.searchParams.set('clubIds',ids.join(','));const r=await fetch(u,{headers,signal:AbortSignal.timeout(7000)});if(!r.ok)throw new Error(`EA ${r.status}`);return r.json()}
-async function seedAroundKnown(store){const rows=await store.q(`SELECT club_id FROM clubs WHERE platform=$1 AND club_id~'^[0-9]+$' GROUP BY club_id ORDER BY club_id::bigint`,[PLATFORM]);for(const row of rows){const id=Number(row.club_id);if(!Number.isSafeInteger(id)||id<1)continue;for(let d=1;d<=RADIUS;d++)for(const x of[id-d,id+d])if(x>0)await store.pool.query(`INSERT INTO club_id_probe(platform,club_id,state,last_run,source_id,priority) VALUES($1,$2,'pending',0,$3,$4) ON CONFLICT(platform,club_id) DO NOTHING`,[PLATFORM,String(x),String(id),Math.max(1,RADIUS-d+1)])}const maxRow=await store.one(`SELECT COALESCE(MAX(club_id::bigint),0) max_id,COALESCE(MIN(club_id::bigint),0) min_id,COUNT(*) numeric_count FROM clubs WHERE platform=$1 AND club_id~'^[0-9]+$'`,[PLATFORM]),max=num(maxRow?.max_id);if(max>0&&max<5000000)for(let d=1;d<=100;d++)await store.pool.query(`INSERT INTO club_id_probe(platform,club_id,state,last_run,source_id,priority) VALUES($1,$2,'pending',0,$3,3) ON CONFLICT(platform,club_id) DO NOTHING`,[PLATFORM,String(max+d),String(max)]);return{min:num(maxRow?.min_id),max,num:num(maxRow?.numeric_count)}}
+async function seedAroundKnown(store){
+  const rows=await store.q(`SELECT club_id FROM clubs WHERE platform=$1 AND club_id~'^[0-9]+$' GROUP BY club_id ORDER BY club_id::bigint`,[PLATFORM]);
+  for(const row of rows){
+    const id=Number(row.club_id);if(!Number.isSafeInteger(id)||id<1)continue;
+    for(let d=1;d<=RADIUS;d++)for(const x of[id-d,id+d])if(x>0)await store.pool.query(`INSERT INTO club_id_probe(platform,club_id,state,last_run,source_id,priority) VALUES($1,$2,'pending',0,$3,$4) ON CONFLICT(platform,club_id) DO NOTHING`,[PLATFORM,String(x),String(id),Math.max(1,RADIUS-d+1)]);
+  }
+  const maxRow=await store.one(`SELECT COALESCE(MAX(club_id::bigint),0) max_id,COALESCE(MIN(club_id::bigint),0) min_id,COUNT(*) numeric_count FROM clubs WHERE platform=$1 AND club_id~'^[0-9]+$'`,[PLATFORM]),max=num(maxRow?.max_id);
+  if(max>0&&max<5000000)for(let d=1;d<=AHEAD;d++)await store.pool.query(`INSERT INTO club_id_probe(platform,club_id,state,last_run,source_id,priority) VALUES($1,$2,'pending',0,$3,3) ON CONFLICT(platform,club_id) DO NOTHING`,[PLATFORM,String(max+d),String(max)]);
+  return{min:num(maxRow?.min_id),max,num:num(maxRow?.numeric_count)};
+}
 async function mark(store,ids,stateName){if(ids.length)await store.pool.query(`UPDATE club_id_probe SET state=$1,last_run=EXTRACT(EPOCH FROM NOW())::bigint WHERE platform=$2 AND club_id=ANY($3::text[])`,[stateName,PLATFORM,ids.map(String)])}
-async function probeChunk(store,ids,depth=0){if(!ids.length)return[];try{const clubs=await extractClubs(store,await probeEA(ids),PLATFORM);await mark(store,ids,'done');for(const c of clubs){await store.pool.query(`UPDATE club_id_probe SET state='found',last_run=EXTRACT(EPOCH FROM NOW())::bigint WHERE platform=$1 AND club_id=$2`,[PLATFORM,String(c.id)]);const id=Number(c.id);if(Number.isSafeInteger(id))for(let d=1;d<=4;d++)for(const x of[id-d,id+d])if(x>0)await store.pool.query(`INSERT INTO club_id_probe(platform,club_id,state,last_run,source_id,priority) VALUES($1,$2,'pending',0,$3,20) ON CONFLICT(platform,club_id) DO NOTHING`,[PLATFORM,String(x),String(c.id)])}return clubs}catch(e){state.lastError=e.message;if(ids.length===1){await mark(store,ids,'invalid');return[]}const mid=Math.ceil(ids.length/2),a=await probeChunk(store,ids.slice(0,mid),depth+1);await sleep(80);const b=await probeChunk(store,ids.slice(mid),depth+1);return[...a,...b]}}
-async function hydrateFound(store,clubs){const uniq=new Map(clubs.map(c=>[String(c.id),c]));let done=0;for(const c of uniq.values()){if(done>=HYDRATE)break;const row=await store.one(`SELECT synced_at FROM clubs WHERE platform=$1 AND club_id=$2`,[PLATFORM,String(c.id)]);if(num(row?.synced_at)>0)continue;const before=num((await store.one(`SELECT COUNT(*) c FROM players`))?.c);try{await syncClub(store,{club_id:String(c.id),name:c.name},PLATFORM);const after=num((await store.one(`SELECT COUNT(*) c FROM players`))?.c);state.hydrated++;state.newPlayers+=Math.max(0,after-before);console.log(`[IDSWEEP20] hydrated ${c.name} (${c.id}) players+${Math.max(0,after-before)}`)}catch(e){state.lastError=e.message}done++;await sleep(gap())}}
-async function cycle(store){if(store.mode!=='postgres'||state.running)return;state.running=true;Object.assign(state,{probed:0,found:0,newClubs:0,hydrated:0,newPlayers:0,lastId:'',lastError:'',started:Math.floor(Date.now()/1000)});try{const beforeC=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c),beforeP=num((await store.one('SELECT COUNT(*) c FROM players'))?.c);await seedAroundKnown(store);const rows=await store.q(`SELECT club_id FROM club_id_probe p WHERE platform=$1 AND state IN('pending','retry') AND NOT EXISTS(SELECT 1 FROM clubs c WHERE c.platform=p.platform AND c.club_id=p.club_id) ORDER BY priority DESC,last_run ASC,club_id::bigint ASC LIMIT $2`,[PLATFORM,BATCH]),ids=rows.map(x=>String(x.club_id));state.probed=ids.length;state.lastId=ids.at(-1)||'';console.log(`[IDSWEEP20] cycle start clubs=${beforeC} players=${beforeP} ids=${ids.length}${ids.length?` range=${ids[0]}..${ids.at(-1)}`:''}`);const found=await probeChunk(store,ids);state.found=found.length;const afterDiscovery=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c);state.newClubs=Math.max(0,afterDiscovery-beforeC);console.log(`[IDSWEEP20] discovery found=${found.length} clubs=${beforeC}->${afterDiscovery}`);await hydrateFound(store,found);const afterC=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c),afterP=num((await store.one('SELECT COUNT(*) c FROM players'))?.c),q=await store.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending,COUNT(*) FILTER(WHERE state='found') found,COUNT(*) FILTER(WHERE state='invalid') invalid FROM club_id_probe WHERE platform=$1`,[PLATFORM]);console.log(`[IDSWEEP20] done probed=${state.probed} found=${state.found} clubs=${beforeC}->${afterC} players=${beforeP}->${afterP} hydrated=${state.hydrated} queue=${num(q?.pending)} invalid=${num(q?.invalid)}${state.lastError?' lastError='+state.lastError:''}`)}finally{state.running=false}}
-const prevInit=Store.prototype.init;Store.prototype.init=async function(){await prevInit.call(this);if(this.mode!=='postgres')return;await this.pool.query(`CREATE TABLE IF NOT EXISTS club_id_probe(platform TEXT NOT NULL,club_id TEXT NOT NULL,state TEXT DEFAULT 'pending',last_run BIGINT DEFAULT 0,source_id TEXT DEFAULT '',priority INTEGER DEFAULT 0,PRIMARY KEY(platform,club_id))`);await this.pool.query(`CREATE INDEX IF NOT EXISTS club_id_probe_state_idx ON club_id_probe(platform,state,priority,last_run)`);const seed=await seedAroundKnown(this),q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending FROM club_id_probe WHERE platform=$1`,[PLATFORM]);console.log(`[IDSWEEP20] neighbor discovery ready numericIds=${seed.num} idRange=${seed.min}..${seed.max} queue=${num(q?.pending)} every=${INTERVAL_MINUTES}m batch=${BATCH}`);setTimeout(()=>cycle(this).catch(e=>console.warn('[IDSWEEP20]',e.message)),12000).unref();setInterval(()=>cycle(this).catch(e=>console.warn('[IDSWEEP20]',e.message)),INTERVAL_MINUTES*60000).unref()};
-const prevDashboard=Store.prototype.dashboard;Store.prototype.dashboard=async function(){const d=await prevDashboard.call(this);if(this.mode!=='postgres')return d;let q={total:0,pending:0,found:0,invalid:0};try{q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending,COUNT(*) FILTER(WHERE state='found') found,COUNT(*) FILTER(WHERE state='invalid') invalid FROM club_id_probe WHERE platform=$1`,[PLATFORM])||q}catch(e){if(e?.code!=='42P01')console.warn('[IDSWEEP20 dashboard]',e.message)}return{...d,idSweep:{...state,queueTotal:num(q?.total),queuePending:num(q?.pending),queueFound:num(q?.found),queueInvalid:num(q?.invalid),intervalMinutes:INTERVAL_MINUTES,batch:BATCH}}};
+async function probeChunk(store,ids,depth=0){
+  if(!ids.length)return[];
+  try{
+    const clubs=await extractClubs(store,await probeEA(ids),PLATFORM);await mark(store,ids,'done');
+    for(const c of clubs){
+      await store.pool.query(`UPDATE club_id_probe SET state='found',last_run=EXTRACT(EPOCH FROM NOW())::bigint WHERE platform=$1 AND club_id=$2`,[PLATFORM,String(c.id)]);
+      const id=Number(c.id);if(Number.isSafeInteger(id))for(let d=1;d<=Math.min(8,RADIUS);d++)for(const x of[id-d,id+d])if(x>0)await store.pool.query(`INSERT INTO club_id_probe(platform,club_id,state,last_run,source_id,priority) VALUES($1,$2,'pending',0,$3,25) ON CONFLICT(platform,club_id) DO UPDATE SET priority=GREATEST(club_id_probe.priority,EXCLUDED.priority)`,[PLATFORM,String(x),String(c.id)]);
+    }
+    return clubs;
+  }catch(e){
+    state.lastError=e.message;
+    if(ids.length===1){await mark(store,ids,'invalid');return[]}
+    const mid=Math.ceil(ids.length/2),a=await probeChunk(store,ids.slice(0,mid),depth+1);await sleep(60);const b=await probeChunk(store,ids.slice(mid),depth+1);return[...a,...b];
+  }
+}
+async function hydrateFound(store,clubs){
+  const uniq=new Map(clubs.map(c=>[String(c.id),c]));let done=0;
+  for(const c of uniq.values()){
+    if(done>=HYDRATE)break;
+    const row=await store.one(`SELECT synced_at FROM clubs WHERE platform=$1 AND club_id=$2`,[PLATFORM,String(c.id)]);if(num(row?.synced_at)>0)continue;
+    const before=num((await store.one(`SELECT COUNT(*) c FROM players`))?.c);
+    try{
+      await syncClub(store,{club_id:String(c.id),name:c.name},PLATFORM);
+      const after=num((await store.one(`SELECT COUNT(*) c FROM players`))?.c);state.hydrated++;state.newPlayers+=Math.max(0,after-before);
+      console.log(`[IDSWEEP20] hydrated ${c.name} (${c.id}) players+${Math.max(0,after-before)}`);
+    }catch(e){state.lastError=e.message}
+    done++;await sleep(gap());
+  }
+}
+async function cycle(store){
+  if(store.mode!=='postgres'||state.running)return;
+  state.running=true;Object.assign(state,{probed:0,found:0,newClubs:0,hydrated:0,newPlayers:0,lastId:'',lastError:'',started:Math.floor(Date.now()/1000),durationSec:0,clubYieldPct:0,playersPerFound:0});
+  try{
+    const beforeC=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c),beforeP=num((await store.one('SELECT COUNT(*) c FROM players'))?.c);
+    await seedAroundKnown(store);
+    const rows=await store.q(`SELECT club_id FROM club_id_probe p WHERE platform=$1 AND state IN('pending','retry') AND NOT EXISTS(SELECT 1 FROM clubs c WHERE c.platform=p.platform AND c.club_id=p.club_id) ORDER BY priority DESC,last_run ASC,club_id::bigint ASC LIMIT $2`,[PLATFORM,BATCH]),ids=rows.map(x=>String(x.club_id));
+    state.probed=ids.length;state.lastId=ids.at(-1)||'';console.log(`[IDSWEEP20] cycle start clubs=${beforeC} players=${beforeP} ids=${ids.length}${ids.length?` range=${ids[0]}..${ids.at(-1)}`:''}`);
+    const found=await probeChunk(store,ids);state.found=found.length;
+    const afterDiscovery=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c);state.newClubs=Math.max(0,afterDiscovery-beforeC);console.log(`[IDSWEEP20] discovery found=${found.length} clubs=${beforeC}->${afterDiscovery}`);
+    await hydrateFound(store,found);
+    const afterC=num((await store.one('SELECT COUNT(*) c FROM clubs'))?.c),afterP=num((await store.one('SELECT COUNT(*) c FROM players'))?.c),q=await store.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending,COUNT(*) FILTER(WHERE state='found') found,COUNT(*) FILTER(WHERE state='invalid') invalid FROM club_id_probe WHERE platform=$1`,[PLATFORM]);
+    state.durationSec=Math.max(1,Math.floor(Date.now()/1000)-state.started);state.clubYieldPct=state.probed?Number((state.found/state.probed*100).toFixed(2)):0;state.playersPerFound=state.found?Number((state.newPlayers/state.found).toFixed(2)):0;
+    console.log(`[IDSWEEP20] done probed=${state.probed} found=${state.found} yield=${state.clubYieldPct}% clubs=${beforeC}->${afterC} players=${beforeP}->${afterP} playersPerFound=${state.playersPerFound} hydrated=${state.hydrated} duration=${state.durationSec}s queue=${num(q?.pending)} invalid=${num(q?.invalid)}${state.lastError?' lastError='+state.lastError:''}`);
+  }finally{state.running=false}
+}
+const prevInit=Store.prototype.init;
+Store.prototype.init=async function(){
+  await prevInit.call(this);if(this.mode!=='postgres')return;
+  await this.pool.query(`CREATE TABLE IF NOT EXISTS club_id_probe(platform TEXT NOT NULL,club_id TEXT NOT NULL,state TEXT DEFAULT 'pending',last_run BIGINT DEFAULT 0,source_id TEXT DEFAULT '',priority INTEGER DEFAULT 0,PRIMARY KEY(platform,club_id))`);
+  await this.pool.query(`CREATE INDEX IF NOT EXISTS club_id_probe_state_idx ON club_id_probe(platform,state,priority,last_run)`);
+  const seed=await seedAroundKnown(this),q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending FROM club_id_probe WHERE platform=$1`,[PLATFORM]);
+  console.log(`[IDSWEEP20] neighbor discovery ready numericIds=${seed.num} idRange=${seed.min}..${seed.max} queue=${num(q?.pending)} every=${INTERVAL_MINUTES}m batch=${BATCH} radius=${RADIUS} ahead=${AHEAD}`);
+  setTimeout(()=>cycle(this).catch(e=>console.warn('[IDSWEEP20]',e.message)),12000).unref();setInterval(()=>cycle(this).catch(e=>console.warn('[IDSWEEP20]',e.message)),INTERVAL_MINUTES*60000).unref();
+};
+const prevDashboard=Store.prototype.dashboard;
+Store.prototype.dashboard=async function(){
+  const d=await prevDashboard.call(this);if(this.mode!=='postgres')return d;let q={total:0,pending:0,found:0,invalid:0};
+  try{q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending,COUNT(*) FILTER(WHERE state='found') found,COUNT(*) FILTER(WHERE state='invalid') invalid FROM club_id_probe WHERE platform=$1`,[PLATFORM])||q}catch(e){if(e?.code!=='42P01')console.warn('[IDSWEEP20 dashboard]',e.message)}
+  return{...d,idSweep:{...state,queueTotal:num(q?.total),queuePending:num(q?.pending),queueFound:num(q?.found),queueInvalid:num(q?.invalid),intervalMinutes:INTERVAL_MINUTES,batch:BATCH,hydrate:HYDRATE,radius:RADIUS,ahead:AHEAD}};
+};
 console.log('[IDSWEEP20] numeric neighbor club discovery enabled');
