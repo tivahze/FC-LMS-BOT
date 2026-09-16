@@ -11,6 +11,7 @@ import './v8player13.js';
 import './v9data14.js';
 import './sorting16.js';
 import './v10features17.js';
-import './notifications18.js';
+import './growth18.js';
+import './discordNotify19.js';
 import './v9selftest15.js';
 await import('./server5.js');
