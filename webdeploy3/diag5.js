@@ -4,20 +4,13 @@ Store.prototype.init=async function(){
   await prev.call(this);
   if(this.mode!=='postgres')return;
   try{
-    const rows=await this.q(`SELECT platform,LOWER(TRIM(COALESCE(match_type,''))) match_type,
-      LEAST(LOWER(TRIM(home_name))||':'||home_goals,LOWER(TRIM(away_name))||':'||away_goals) side_a,
-      GREATEST(LOWER(TRIM(home_name))||':'||home_goals,LOWER(TRIM(away_name))||':'||away_goals) side_b,
-      COUNT(*)::int copies,
-      JSON_AGG(JSON_BUILD_OBJECT('uid',uid,'match_id',match_id,'ts',ts,'played_utc',TO_CHAR(TO_TIMESTAMP(ts) AT TIME ZONE 'UTC','YYYY-MM-DD HH24:MI:SS'),'played_paris',TO_CHAR(TO_TIMESTAMP(ts) AT TIME ZONE 'Europe/Paris','YYYY-MM-DD HH24:MI:SS'),'home_id',home_club_id,'home',home_name,'hg',home_goals,'away_id',away_club_id,'away',away_name,'ag',away_goals) ORDER BY ts DESC) examples
-      FROM matches
-      GROUP BY platform,LOWER(TRIM(COALESCE(match_type,''))),LEAST(LOWER(TRIM(home_name))||':'||home_goals,LOWER(TRIM(away_name))||':'||away_goals),GREATEST(LOWER(TRIM(home_name))||':'||home_goals,LOWER(TRIM(away_name))||':'||away_goals)
-      HAVING COUNT(*)>1 ORDER BY COUNT(*) DESC LIMIT 20`);
-    console.log('[MATCH-DIAG] '+JSON.stringify(rows));
-    const p=await this.q(`SELECT m.uid,m.match_id,m.ts,COUNT(mp.uid)::int player_count,
-      STRING_AGG(COALESCE(mp.club_id,'')||':'||COALESCE(mp.player_id,'')||':'||COALESCE(mp.position,'')||':'||mp.goals||':'||mp.assists||':'||ROUND(mp.rating::numeric,2),'|' ORDER BY mp.club_id,mp.player_id) player_signature
-      FROM matches m LEFT JOIN match_players mp ON mp.match_uid=m.uid
-      WHERE m.uid IN('FC26:common-gen5:2970004970141','FC26:common-gen5:2970004920067')
-      GROUP BY m.uid,m.match_id,m.ts ORDER BY m.ts`);
-    console.log('[NEWTEAM-3-5-DIAG] '+JSON.stringify(p));
-  }catch(e){console.warn('[MATCH-DIAG]',e.message)}
+    const p=await this.q(`SELECT platform,club_id,club_name,name_norm,COUNT(*)::int copies,
+      JSON_AGG(JSON_BUILD_OBJECT('player_id',player_id,'name',name,'games',games,'goals',goals,'assists',assists,'rating',rating,'raw_len',LENGTH(COALESCE(raw_json,''))) ORDER BY games DESC,rating DESC) variants
+      FROM players WHERE name_norm<>'' GROUP BY platform,club_id,club_name,name_norm HAVING COUNT(DISTINCT player_id)>1 ORDER BY COUNT(*) DESC,club_name,name_norm LIMIT 60`);
+    console.log('[PLAYER-ID-DIAG] '+JSON.stringify(p));
+    const c=await this.q(`SELECT platform,name_norm,COUNT(*)::int copies,
+      JSON_AGG(JSON_BUILD_OBJECT('club_id',club_id,'name',name,'skill',skill,'games',games,'raw_len',LENGTH(COALESCE(raw_json,''))) ORDER BY games DESC,skill DESC) variants
+      FROM clubs WHERE name_norm<>'' GROUP BY platform,name_norm HAVING COUNT(DISTINCT club_id)>1 ORDER BY COUNT(*) DESC,name_norm LIMIT 20`);
+    console.log('[CLUB-ID-DIAG] '+JSON.stringify(c));
+  }catch(e){console.warn('[DATA-DIAG]',e.message)}
 };
