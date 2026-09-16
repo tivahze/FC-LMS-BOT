@@ -105,6 +105,11 @@ const previousDashboard=Store.prototype.dashboard;
 Store.prototype.dashboard=async function(){
   const d=await previousDashboard.call(this);
   if(this.mode!=='postgres')return d;
-  const s=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='pending') pending,COUNT(*) FILTER(WHERE state='done') done,COALESCE(SUM(last_count),0) hits FROM discovery_frontier`);
+  let s={total:0,pending:0,done:0,hits:0};
+  try{
+    s=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='pending') pending,COUNT(*) FILTER(WHERE state='done') done,COALESCE(SUM(last_count),0) hits FROM discovery_frontier`)||s;
+  }catch(e){
+    if(e?.code!=='42P01')console.warn('[DISCOVERY10 dashboard]',e.message);
+  }
   return{...d,adaptiveDiscovery:{...active,total:num(s?.total),pending:num(s?.pending),done:num(s?.done),hits:num(s?.hits),intervalMinutes:INTERVAL_MINUTES,batch:BATCH,maxDepth:MAX_DEPTH}};
 };
