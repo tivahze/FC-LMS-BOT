@@ -7,6 +7,9 @@ import {LABEL,norm} from './constants.js';
 import {crawl,runCrawler,liveDiscover,syncClub} from './crawler5.js';
 const DIR=path.dirname(fileURLToPath(import.meta.url)),HOST=process.env.HOST||'0.0.0.0',PORT=Number(process.env.PORT||3000),store=new Store();
 await store.init();
+if(store.mode==='postgres'){
+  try{await store.pool.query(`UPDATE players SET rating=CASE WHEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision>10 THEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision/10 ELSE NULLIF(raw_json::jsonb->>'ratingAve','')::double precision END WHERE rating=0 AND raw_json IS NOT NULL AND raw_json<>'' AND raw_json::jsonb ? 'ratingAve'`)}catch(e){console.warn('Rating backfill skipped:',e.message)}
+}
 const files={'/':['index5.html','text/html; charset=utf-8'],'/style5.css':['style5.css','text/css; charset=utf-8'],'/app5.js':['app5.js','application/javascript; charset=utf-8']};
 const label=x=>({...x,platform_label:LABEL[x.platform]||x.platform});
 const page=u=>{const p=Math.max(1,Number(u.searchParams.get('page')||1)),limit=Math.min(60,Math.max(12,Number(u.searchParams.get('limit')||30)));return{p,limit}};
