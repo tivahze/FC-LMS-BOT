@@ -37,6 +37,8 @@ const files={
 };
 const label=x=>({...x,platform_label:LABEL[x.platform]||x.platform});
 const page=u=>{const p=Math.max(1,Number(u.searchParams.get('page')||1)),limit=Math.min(100,Math.max(10,Number(u.searchParams.get('limit')||30)));return{p,limit}};
+const apiCache=new Map();
+async function cached(key,ttlMs,fn){const hit=apiCache.get(key),now=Date.now();if(hit&&now-hit.at<ttlMs)return hit.value;const value=await fn();apiCache.set(key,{at:now,value});if(apiCache.size>250){for(const[k,v]of apiCache)if(now-v.at>60000)apiCache.delete(k)}return value}
 function send(res,code,data){res.writeHead(code,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(data))}
 function serve(res,file,type='text/html; charset=utf-8',cache='no-cache'){res.writeHead(200,{'content-type':type,'cache-control':cache});res.end(fs.readFileSync(path.join(DIR,file)))}
 function xmlEsc(s){return String(s).replace(/[<>&'"]/g,c=>({'<':'&lt;','>':'&gt;','&':'&amp;',"'":'&apos;','"':'&quot;'}[c]))}
@@ -56,9 +58,10 @@ const server=http.createServer(async(req,res)=>{try{
   if(pathname==='/api/health')return send(res,200,{ok:true,version:'v8',storage:store.mode});
   if(pathname==='/api/crawl')return send(res,200,crawl);
   if(pathname==='/api/dashboard')return send(res,200,await store.dashboard());
-  if(pathname==='/api/v8/stats')return send(res,200,await store.v8Stats());
+  if(pathname==='/api/v8/stats')return send(res,200,await cached('v8:stats',15000,()=>store.v8Stats()));
   if(pathname==='/api/v8/search'){const q=(u.searchParams.get('q')||'').trim(),p=u.searchParams.get('platform')||'',limit=Number(u.searchParams.get('limit')||8);if(q.length<1)return send(res,200,{players:[],clubs:[]});const r=await store.v8Search(q,p,limit);return send(res,200,{players:r.players.map(label),clubs:r.clubs.map(label)})}
-  if(pathname==='/api/v8/rankings'){const type=u.searchParams.get('type')||'player',metric=u.searchParams.get('metric')||(type==='club'?'skill':'goals'),p=u.searchParams.get('platform')||'',min=Number(u.searchParams.get('minGames')||3),pg=page(u),r=await store.v8Rankings(type,metric,p,min,pg.p,pg.limit);return send(res,200,{...r,items:r.items.map(label)})}
+  if(pathname==='/api/v8/rankings'){const type=u.searchParams.get('type')||'player',metric=u.searchParams.get('metric')||(type==='club'?'skill':'goals'),p=u.searchParams.get('platform')||'',min=Number(u.searchParams.get('minGames')||3),pg=page(u),key=`rank:${type}:${metric}:${p}:${min}:${pg.p}:${pg.limit}`,r=await cached(key,30000,()=>store.v8Rankings(type,metric,p,min,pg.p,pg.limit));return send(res,200,{...r,items:r.items.map(label)})}
+  if(pathname==='/api/v8/popular'){const type=u.searchParams.get('type')==='club'?'club':'player',limit=Number(u.searchParams.get('limit')||8),items=await cached(`popular:${type}:${limit}`,15000,()=>store.v8Popular(type,limit));return send(res,200,{type,items:items.map(label)})}
   if(pathname==='/api/overview'){const o=await store.overview();return send(res,200,{recentClubs:o.recentClubs.map(label),topPlayers:o.topPlayers.map(label),matches:o.matches.map(label)})}
   if(pathname==='/api/search'){const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',r=await store.search(q,p);return send(res,200,{clubs:r.clubs.map(label),players:r.players.map(label)})}
   if(pathname==='/api/discover'&&req.method==='POST'){const q=(u.searchParams.get('q')||'').trim(),p=u.searchParams.get('platform')||'';if(q.length<2)return send(res,400,{error:'2 caractères minimum'});const found=await liveDiscover(store,q,p),r=await store.search(norm(q),p);return send(res,200,{found,clubs:r.clubs.map(label),players:r.players.map(label)})}
@@ -67,8 +70,8 @@ const server=http.createServer(async(req,res)=>{try{
   if(pathname==='/api/players'){const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',sort=u.searchParams.get('sort')||'games',pg=page(u),r=await store.paged('players',q,p,sort,pg.p,pg.limit);return send(res,200,{page:pg.p,total:r.total,pages:Math.max(1,Math.ceil(r.total/pg.limit)),items:r.items.map(label)})}
   if(pathname==='/api/rankings'){const p=u.searchParams.get('platform')||'',m=u.searchParams.get('metric')||'goals';return send(res,200,{metric:m,items:(await store.rankings(p,m)).map(label)})}
   if(pathname==='/api/matches'){const p=u.searchParams.get('platform')||'';return send(res,200,{items:(await store.recentMatches(p,80)).map(label)})}
-  if(pathname==='/api/club'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',r=await store.clubAdvanced(p,id);if(!r)return send(res,404,{error:'Club introuvable'});return send(res,200,{...r,club:label(r.club),players:r.players.map(label)})}
-  if(pathname==='/api/player'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',r=await store.player(p,id);if(!r)return send(res,404,{error:'Joueur introuvable'});return send(res,200,{player:label(r.player),recent:r.recent,advanced:r.advanced})}
+  if(pathname==='/api/club'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',r=await store.clubAdvanced(p,id);if(!r)return send(res,404,{error:'Club introuvable'});store.v8TouchView?.('club',p,id).catch(()=>{});return send(res,200,{...r,club:label(r.club),players:r.players.map(label)})}
+  if(pathname==='/api/player'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',r=await store.player(p,id);if(!r)return send(res,404,{error:'Joueur introuvable'});store.v8TouchView?.('player',p,id).catch(()=>{});return send(res,200,{player:label(r.player),recent:r.recent,advanced:r.advanced})}
   return send(res,404,{error:'not found'});
 }catch(e){console.error(e);return send(res,500,{error:e.message})}});
 server.listen(PORT,HOST,()=>{console.log(`FC Clubs Global V8 on ${HOST}:${PORT} [${store.mode}]`);if(process.env.AUTO_MAX_CRAWL!=='0')setTimeout(()=>runCrawler(store),1200)});
