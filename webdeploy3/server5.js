@@ -10,11 +10,19 @@ await store.init();
 if(store.mode==='postgres'){
   try{await store.pool.query(`UPDATE players SET rating=CASE WHEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision>10 THEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision/10 ELSE NULLIF(raw_json::jsonb->>'ratingAve','')::double precision END WHERE rating=0 AND raw_json IS NOT NULL AND raw_json<>'' AND raw_json::jsonb ? 'ratingAve'`)}catch(e){console.warn('Rating backfill skipped:',e.message)}
 }
-const files={'/':['index5.html','text/html; charset=utf-8'],'/style5.css':['style5.css','text/css; charset=utf-8'],'/app5.js':['app5.js','application/javascript; charset=utf-8']};
+const files={
+  '/':['index5.html','text/html; charset=utf-8'],
+  '/style5.css':['style5.css','text/css; charset=utf-8'],
+  '/app5.js':['app5.js','application/javascript; charset=utf-8'],
+  '/fr/player':['player.html','text/html; charset=utf-8'],
+  '/fr/player/':['player.html','text/html; charset=utf-8'],
+  '/player-page.css':['player-page.css','text/css; charset=utf-8'],
+  '/player-page.js':['player-page.js','application/javascript; charset=utf-8']
+};
 const label=x=>({...x,platform_label:LABEL[x.platform]||x.platform});
 const page=u=>{const p=Math.max(1,Number(u.searchParams.get('page')||1)),limit=Math.min(60,Math.max(12,Number(u.searchParams.get('limit')||30)));return{p,limit}};
 function send(res,code,data){res.writeHead(code,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(data))}
-const server=http.createServer(async(req,res)=>{try{const u=new URL(req.url,'http://local');if(files[u.pathname]){const[f,t]=files[u.pathname];res.writeHead(200,{'content-type':t,'cache-control':u.pathname==='/'?'no-cache':'public, max-age=60'});return res.end(fs.readFileSync(path.join(DIR,f)))}
+const server=http.createServer(async(req,res)=>{try{const u=new URL(req.url,'http://local');if(files[u.pathname]){const[f,t]=files[u.pathname];res.writeHead(200,{'content-type':t,'cache-control':u.pathname==='/'||u.pathname.startsWith('/fr/')?'no-cache':'public, max-age=60'});return res.end(fs.readFileSync(path.join(DIR,f)))}
 if(u.pathname==='/api/health')return send(res,200,{ok:true,version:'v5',storage:store.mode});
 if(u.pathname==='/api/crawl')return send(res,200,crawl);
 if(u.pathname==='/api/dashboard')return send(res,200,await store.dashboard());
