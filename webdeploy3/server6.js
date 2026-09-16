@@ -14,5 +14,4 @@ import './v10features17.js';
 import './growth18.js';
 import './idSweep20.js';
 import './discordNotify19.js';
-import './v9selftest15.js';
 await import('./server5.js');
