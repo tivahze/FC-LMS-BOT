@@ -16,4 +16,5 @@ import './idSweep20.js';
 import './growthSnapshot21.js';
 import './discordNotify19.js';
 import './priorityMannequins22.js';
+import './massIndex23.js';
 await import('./server5.js');
