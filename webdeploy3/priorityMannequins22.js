@@ -5,6 +5,7 @@ import {sleep,gap,norm,PLATFORMS} from './constants.js';
 const DEFAULT_PLATFORM='common-gen5';
 const META_PLATFORM='priority:les-mannequins:platform';
 const META_CLUB='priority:les-mannequins:club_id';
+const META_CURSOR='priority:les-mannequins:id_cursor';
 const QUERIES=['Les Mannequins','Mannequins','Mannequin','FC Mannequins','FC Mannequin','FC LMS','LMS FC','LMS'];
 const CLUB_ALIASES=['Les Mannequins','Mannequins','Mannequin','FC Mannequins','FC Mannequin','FC LMS','LMS FC'].map(norm);
 const PLAYER_GROUPS=[
@@ -97,6 +98,33 @@ async function directEaSearch(store,found){
   }
 }
 
+async function individualIdScan(store,found){
+  let cursor=Number(await store.meta(META_CURSOR,'1'))||1;
+  const maxPerRun=160;
+  const upper=Math.max(6000,cursor+maxPerRun);
+  console.log(`[PRIORITY22] single-id scan start cursor=${cursor} count=${maxPerRun}`);
+  for(let n=0;n<maxPerRun&&cursor<=upper;n++,cursor++){
+    try{
+      const payload=await ea('/clubs/info',{platform:DEFAULT_PLATFORM,clubIds:String(cursor)});
+      const clubs=await extractClubs(store,payload,DEFAULT_PLATFORM);
+      for(const c of clubs){
+        if(isTargetName(c.name)){
+          found.set(`${DEFAULT_PLATFORM}|${c.id}`,{platform:DEFAULT_PLATFORM,club_id:String(c.id),name:c.name});
+          console.log(`[PRIORITY22] SINGLE ID NAME HIT club=${c.name} id=${c.id}`);
+          await store.setMeta(META_CURSOR,cursor+1);
+          return;
+        }
+      }
+    }catch(e){
+      if(!String(e.message).includes('400')&&!String(e.message).includes('404'))console.warn(`[PRIORITY22] single id ${cursor}: ${e.message}`);
+    }
+    if(n>0&&n%40===0)console.log(`[PRIORITY22] single-id scan progress cursor=${cursor}`);
+    await sleep(360);
+  }
+  await store.setMeta(META_CURSOR,cursor);
+  console.log(`[PRIORITY22] single-id scan end nextCursor=${cursor}`);
+}
+
 async function discover(store){
   const found=new Map();
   const roster=await knownRosterCandidates(store);
@@ -113,7 +141,8 @@ async function discover(store){
   }
 
   if(!found.size)await directEaSearch(store,found);
-  if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet after corrected EA search');return null}
+  if(!found.size)await individualIdScan(store,found);
+  if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet; persistent single-id scan will continue');return null}
 
   const scored=[];
   for(const club of [...found.values()].slice(0,20)){
@@ -154,7 +183,7 @@ const previousInit=Store.prototype.init;
 Store.prototype.init=async function(){
   await previousInit.call(this);
   if(this.mode!=='postgres')return;
-  console.log('[PRIORITY22] Les Mannequins priority indexing enabled + corrected EA search');
+  console.log('[PRIORITY22] Les Mannequins priority indexing enabled + persistent single-ID scan');
   setTimeout(()=>refresh(this),10000).unref();
   setInterval(()=>refresh(this),5*60000).unref();
 };
