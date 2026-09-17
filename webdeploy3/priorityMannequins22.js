@@ -5,11 +5,12 @@ import {sleep,gap,norm} from './constants.js';
 const PLATFORM='common-gen5';
 const META_PLATFORM='priority:les-mannequins:platform';
 const META_CLUB='priority:les-mannequins:club_id';
-const QUERIES=['Les Mannequins','Mannequins','FC Mannequins','FC Mannequin','Mannequin'];
+const QUERIES=['Les Mannequins','Mannequins','FC Mannequins','FC Mannequin','Mannequin','FC LMS'];
+const CLUB_ALIASES=['Les Mannequins','Mannequins','FC Mannequins','FC Mannequin','Mannequin','FC LMS'].map(norm);
 const PLAYER_GROUPS=[['Tivahze'],['gorux08','gorux'],['ScOtche06','scotche'],['OCTechelle','Oct Echelle','echelle']].map(g=>g.map(norm));
 let running=false;
 
-const isTargetName=name=>norm(name).includes('mannequin');
+const isTargetName=name=>{const n=norm(name);return CLUB_ALIASES.some(a=>n===a||n.includes(a)||a.includes(n))};
 const knownHits=players=>{
   const names=players.map(x=>norm(x.name));
   return PLAYER_GROUPS.filter(group=>group.some(h=>names.some(n=>n===h||n.includes(h)||h.includes(n)))).length;
@@ -30,9 +31,11 @@ function groupKnownRows(rows=[]){
 
 async function knownRosterCandidates(store){
   const rows=[];
-  rows.push(...await store.q(`SELECT platform,club_id,club_name,name FROM players WHERE platform=$1 AND club_id<>'' AND (name_norm LIKE '%tivahze%' OR name_norm LIKE '%gorux%' OR name_norm LIKE '%scotche%' OR name_norm LIKE '%octechelle%' OR name_norm LIKE '%echelle%')`,[PLATFORM]));
-  rows.push(...await store.q(`SELECT platform,club_id,club_name,name FROM match_players WHERE platform=$1 AND club_id<>'' AND (lower(name) LIKE '%tivahze%' OR lower(name) LIKE '%gorux%' OR lower(name) LIKE '%scotche%' OR lower(name) LIKE '%octechelle%' OR lower(name) LIKE '%echelle%')`,[PLATFORM]));
-  return groupKnownRows(rows);
+  rows.push(...await store.q(`SELECT platform,club_id,club_name,name FROM players WHERE club_id<>'' AND (name_norm LIKE '%tivahze%' OR name_norm LIKE '%gorux%' OR name_norm LIKE '%scotche%' OR name_norm LIKE '%octechelle%' OR name_norm LIKE '%echelle%')`));
+  rows.push(...await store.q(`SELECT platform,club_id,club_name,name FROM match_players WHERE club_id<>'' AND (lower(name) LIKE '%tivahze%' OR lower(name) LIKE '%gorux%' OR lower(name) LIKE '%scotche%' OR lower(name) LIKE '%octechelle%' OR lower(name) LIKE '%echelle%')`));
+  const groups=groupKnownRows(rows);
+  for(const c of groups.slice(0,20))console.log(`[PRIORITY22] clue platform=${c.platform} club=${c.name||c.club_id} id=${c.club_id} knownHits=${c.hits} players=${c.players.map(p=>p.name).join(',')}`);
+  return groups;
 }
 
 async function markPriority(store,club){
@@ -51,32 +54,32 @@ async function hydrateAndScore(store,club){
   const fresh=await store.one(`SELECT platform,club_id,name FROM clubs WHERE platform=$1 AND club_id=$2`,[club.platform||PLATFORM,String(club.club_id)]);
   if(fresh?.name)club={...club,name:fresh.name};
   const players=await store.q(`SELECT name,player_id,club_name FROM players WHERE platform=$1 AND club_id=$2 ORDER BY updated_at DESC`,[club.platform||PLATFORM,String(club.club_id)]);
-  const hits=knownHits(players),nameScore=isTargetName(club.name)?100:0,exact=norm(club.name)==='lesmannequins'?100:0;
-  return{club,players,hits,score:exact+nameScore+hits*80};
+  const hits=knownHits(players),nameScore=isTargetName(club.name)?140:0,exact=norm(club.name)==='lesmannequins'?120:0;
+  return{club,players,hits,score:exact+nameScore+hits*100};
 }
 
 async function discover(store){
   const found=new Map();
   const roster=await knownRosterCandidates(store);
-  for(const c of roster.filter(x=>x.hits>=2)){
+  for(const c of roster.filter(x=>x.hits>=2||isTargetName(x.name))){
     const dbClub=await store.one(`SELECT platform,club_id,name FROM clubs WHERE platform=$1 AND club_id=$2`,[c.platform,String(c.club_id)]);
-    found.set(String(c.club_id),dbClub||{platform:c.platform,club_id:c.club_id,name:c.name});
+    found.set(`${c.platform}|${c.club_id}`,dbClub||{platform:c.platform,club_id:c.club_id,name:c.name});
     console.log(`[PRIORITY22] roster candidate ${c.name||c.club_id} id=${c.club_id} knownHits=${c.hits}`);
   }
-  const local=await store.q(`SELECT platform,club_id,name FROM clubs WHERE platform=$1 AND name_norm LIKE '%mannequin%' ORDER BY updated_at DESC LIMIT 20`,[PLATFORM]);
-  for(const c of local)found.set(String(c.club_id),c);
+  const local=await store.q(`SELECT platform,club_id,name FROM clubs WHERE name_norm LIKE '%mannequin%' OR name_norm='fclms' ORDER BY updated_at DESC LIMIT 30`);
+  for(const c of local)found.set(`${c.platform}|${c.club_id}`,c);
   for(const q of QUERIES){
     for(const endpoint of ['/currentSeasonLeaderboard/search','/allTimeLeaderboard/search']){
       try{
         const clubs=await extractClubs(store,await ea(endpoint,{platform:PLATFORM,clubName:q,maxResultCount:100}),PLATFORM);
-        for(const c of clubs)if(isTargetName(c.name))found.set(String(c.id),{platform:PLATFORM,club_id:String(c.id),name:c.name});
+        for(const c of clubs)if(isTargetName(c.name))found.set(`${PLATFORM}|${c.id}`,{platform:PLATFORM,club_id:String(c.id),name:c.name});
       }catch(e){console.warn(`[PRIORITY22] search ${q}: ${e.message}`)}
       await sleep(gap());
     }
   }
   if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet');return null}
   const scored=[];
-  for(const club of [...found.values()].slice(0,10)){
+  for(const club of [...found.values()].slice(0,12)){
     scored.push(await hydrateAndScore(store,club));
     await sleep(gap());
   }
@@ -85,7 +88,7 @@ async function discover(store){
   if(!best)return null;
   if(!isTargetName(best.club.name)&&best.hits<2){console.warn(`[PRIORITY22] candidates found but confidence too low best=${best.club.name} hits=${best.hits}`);return null}
   await markPriority(store,best.club);
-  console.log(`[PRIORITY22] selected ${best.club.name} id=${best.club.club_id} players=${best.players.length} knownHits=${best.hits}`);
+  console.log(`[PRIORITY22] selected ${best.club.name} id=${best.club.club_id} platform=${best.club.platform} players=${best.players.length} knownHits=${best.hits}`);
   if(best.players.length)console.log(`[PRIORITY22] roster ${best.players.map(x=>x.name).join(', ')}`);
   return best.club;
 }
@@ -113,6 +116,6 @@ Store.prototype.init=async function(){
   await previousInit.call(this);
   if(this.mode!=='postgres')return;
   console.log('[PRIORITY22] Les Mannequins priority indexing enabled');
-  setTimeout(()=>refresh(this),12000).unref();
-  setInterval(()=>refresh(this),10*60000).unref();
+  setTimeout(()=>refresh(this),10000).unref();
+  setInterval(()=>refresh(this),5*60000).unref();
 };
