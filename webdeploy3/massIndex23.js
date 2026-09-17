@@ -9,7 +9,8 @@ const DISCOVERY_BATCH=Math.max(300,Number(process.env.MASS23_DISCOVERY_BATCH||60
 const DISCOVERY_CONCURRENCY=Math.max(3,Number(process.env.MASS23_DISCOVERY_CONCURRENCY||6));
 const HARVEST_BATCH=Math.max(8,Number(process.env.MASS23_HARVEST_BATCH||18));
 const INTERVAL_MINUTES=Math.max(2,Number(process.env.MASS23_INTERVAL_MINUTES||3));
-const REHARVEST_HOURS=Math.max(24,Number(process.env.MASS23_REHARVEST_HOURS||168));
+const REHARVEST_HOURS=Math.max(24,Number(process.env.MASS23_REHARVEST_HOURS||24));
+const PRIVATE_FETCH_COUNT=10;
 const headers={accept:'application/json','accept-language':'fr-FR,fr;q=0.9,en;q=0.8','user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36',referer:'https://www.ea.com/'};
 const state={running:false,cursor:0,probed:0,clubsFound:0,newClubs:0,harvested:0,matches:0,playerRows:0,newPlayers:0,lastClub:'',lastError:'',started:0,durationSec:0};
 let running=false;
@@ -33,8 +34,7 @@ async function seedCursor(store){
     const r=await store.one(`SELECT COALESCE(MAX(club_id::bigint),0) max_id FROM clubs WHERE platform=$1 AND club_id ~ '^[0-9]+$'`,[PLATFORM]);
     maxKnown=Number(r?.max_id||0);
   }catch{}
-  const cursor=Math.max(1,own,priority,maxKnown>0?maxKnown-250:1);
-  return cursor;
+  return Math.max(1,own,priority,maxKnown>0?maxKnown-250:1);
 }
 
 async function discoverIds(store){
@@ -49,10 +49,7 @@ async function discoverIds(store){
       if(!payload)continue;
       try{
         const clubs=await extractClubs(store,payload,PLATFORM);
-        if(clubs.length){
-          found+=clubs.length;
-          state.lastClub=clubs.map(c=>`${c.name}#${c.id}`).join(', ');
-        }
+        if(clubs.length){found+=clubs.length;state.lastClub=clubs.map(c=>`${c.name}#${c.id}`).join(', ')}
       }catch(e){state.lastError=e.message;console.warn(`[MASS23] parse club ${id}: ${e.message}`)}
     }
     cursor+=ids.length;
@@ -69,7 +66,7 @@ async function discoverIds(store){
 }
 
 async function savePrivateHistory(store,row){
-  const payload=await ea('/clubs/matches',{platform:row.platform,clubIds:String(row.club_id),matchType:'friendlyMatch',maxResultCount:100});
+  const payload=await ea('/clubs/matches',{platform:row.platform,clubIds:String(row.club_id),matchType:'friendlyMatch',maxResultCount:PRIVATE_FETCH_COUNT});
   const matches=normalizeMatches(payload,'friendlyMatch');
   const playerKeys=new Set();
   for(const m of matches){
@@ -100,7 +97,7 @@ async function harvestPrivateMatches(store){
     LIMIT $3`,[PLATFORM,cutoff,HARVEST_BATCH]);
   if(!rows.length)return;
   const beforePlayers=num((await store.one(`SELECT COUNT(*) c FROM players WHERE platform=$1`,[PLATFORM]))?.c);
-  console.log(`[MASS23] private harvest start clubs=${rows.length}`);
+  console.log(`[MASS23] private harvest start clubs=${rows.length} maxResultCount=${PRIVATE_FETCH_COUNT}`);
   for(let i=0;i<rows.length;i+=2){
     const pair=rows.slice(i,i+2);
     await Promise.all(pair.map(async row=>{
@@ -125,10 +122,7 @@ async function harvestPrivateMatches(store){
 async function cycle(store){
   if(store.mode!=='postgres'||running)return;
   running=true;state.running=true;Object.assign(state,{probed:0,clubsFound:0,newClubs:0,harvested:0,matches:0,playerRows:0,newPlayers:0,lastError:'',started:Math.floor(Date.now()/1000)});
-  try{
-    await discoverIds(store);
-    await harvestPrivateMatches(store);
-  }catch(e){state.lastError=e.message;console.warn('[MASS23]',e.message)}finally{
+  try{await discoverIds(store);await harvestPrivateMatches(store)}catch(e){state.lastError=e.message;console.warn('[MASS23]',e.message)}finally{
     state.durationSec=Math.max(1,Math.floor(Date.now()/1000)-state.started);state.running=false;running=false;
     console.log(`[MASS23] cycle done cursor=${state.cursor} newClubs=${state.newClubs} harvested=${state.harvested} matches=${state.matches} newPlayers=${state.newPlayers} duration=${state.durationSec}s${state.lastError?' lastError='+state.lastError:''}`);
   }
@@ -143,7 +137,7 @@ Store.prototype.init=async function(){
     state TEXT DEFAULT 'new',attempts INTEGER DEFAULT 0,last_error TEXT DEFAULT '',PRIMARY KEY(platform,club_id))`);
   await this.pool.query(`CREATE INDEX IF NOT EXISTS private_harvest23_run_idx ON private_harvest23(platform,state,last_run)`);
   const cursor=await seedCursor(this),q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='done') done,COALESCE(SUM(matches),0) matches,COALESCE(SUM(players),0) players FROM private_harvest23 WHERE platform=$1`,[PLATFORM]);
-  console.log(`[MASS23] massive EA indexer ready cursor=${cursor} harvested=${num(q?.done)}/${num(q?.total)} archivedMatches=${num(q?.matches)} playerRows=${num(q?.players)} every=${INTERVAL_MINUTES}m`);
+  console.log(`[MASS23] massive EA indexer ready cursor=${cursor} harvested=${num(q?.done)}/${num(q?.total)} archivedMatches=${num(q?.matches)} playerRows=${num(q?.players)} every=${INTERVAL_MINUTES}m reharvest=${REHARVEST_HOURS}h`);
   setTimeout(()=>cycle(this),20000).unref();
   setInterval(()=>cycle(this),INTERVAL_MINUTES*60000).unref();
 };
@@ -153,7 +147,7 @@ Store.prototype.dashboard=async function(){
   const d=await previousDashboard.call(this);if(this.mode!=='postgres')return d;
   let q={total:0,done:0,retry:0,matches:0,players:0};
   try{q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='done') done,COUNT(*) FILTER(WHERE state='retry') retry,COALESCE(SUM(matches),0) matches,COALESCE(SUM(players),0) players FROM private_harvest23 WHERE platform=$1`,[PLATFORM])||q}catch(e){if(e?.code!=='42P01')console.warn('[MASS23 dashboard]',e.message)}
-  return{...d,massIndexer:{...state,harvestTotal:num(q?.total),harvestDone:num(q?.done),harvestRetry:num(q?.retry),archiveMatches:num(q?.matches),archivePlayerRows:num(q?.players),intervalMinutes:INTERVAL_MINUTES,discoveryBatch:DISCOVERY_BATCH,harvestBatch:HARVEST_BATCH}};
+  return{...d,massIndexer:{...state,harvestTotal:num(q?.total),harvestDone:num(q?.done),harvestRetry:num(q?.retry),archiveMatches:num(q?.matches),archivePlayerRows:num(q?.players),intervalMinutes:INTERVAL_MINUTES,discoveryBatch:DISCOVERY_BATCH,harvestBatch:HARVEST_BATCH,reharvestHours:REHARVEST_HOURS}};
 };
 
 console.log('[MASS23] massive club + private-match indexer enabled');
