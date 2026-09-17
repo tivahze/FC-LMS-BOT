@@ -1,8 +1,8 @@
 import {Store} from './store5.js';
 import {ea,extractClubs,syncClub} from './crawler5.js';
-import {sleep,gap,norm,PLATFORMS} from './constants.js';
+import {sleep,gap,norm} from './constants.js';
 
-const DEFAULT_PLATFORM='common-gen5';
+const PLATFORM='common-gen5';
 const META_PLATFORM='priority:les-mannequins:platform';
 const META_CLUB='priority:les-mannequins:club_id';
 const META_CURSOR='priority:les-mannequins:id_cursor';
@@ -28,8 +28,8 @@ function groupKnownRows(rows=[]){
   const map=new Map();
   for(const r of rows){
     if(!r.club_id)continue;
-    const key=`${r.platform||DEFAULT_PLATFORM}|${r.club_id}`;
-    const x=map.get(key)||{platform:r.platform||DEFAULT_PLATFORM,club_id:String(r.club_id),name:r.club_name||'',players:[]};
+    const key=`${r.platform||PLATFORM}|${r.club_id}`;
+    const x=map.get(key)||{platform:r.platform||PLATFORM,club_id:String(r.club_id),name:r.club_name||'',players:[]};
     if(r.club_name)x.name=r.club_name;
     x.players.push({name:r.name});
     map.set(key,x);
@@ -55,61 +55,71 @@ async function knownRosterCandidates(store){
 }
 
 async function markPriority(store,club){
-  await store.setMeta(META_PLATFORM,club.platform||DEFAULT_PLATFORM);
+  await store.setMeta(META_PLATFORM,club.platform||PLATFORM);
   await store.setMeta(META_CLUB,String(club.club_id));
   if(store.mode==='postgres'){
     await store.pool.query(`INSERT INTO watched_clubs(platform,club_id,name,last_viewed,last_polled,first_seen)
       VALUES($1,$2,$3,EXTRACT(EPOCH FROM NOW())::BIGINT,0,EXTRACT(EPOCH FROM NOW())::BIGINT)
       ON CONFLICT(platform,club_id) DO UPDATE SET name=CASE WHEN EXCLUDED.name<>'' THEN EXCLUDED.name ELSE watched_clubs.name END,last_viewed=EXTRACT(EPOCH FROM NOW())::BIGINT`,
-      [club.platform||DEFAULT_PLATFORM,String(club.club_id),String(club.name||'Les Mannequins')]);
+      [club.platform||PLATFORM,String(club.club_id),String(club.name||'Les Mannequins')]);
   }
 }
 
 async function hydrateAndScore(store,club){
-  try{await syncClub(store,{club_id:club.club_id,name:club.name},club.platform||DEFAULT_PLATFORM)}catch(e){console.warn(`[PRIORITY22] sync ${club.club_id}: ${e.message}`)}
-  const fresh=await store.one(`SELECT platform,club_id,name FROM clubs WHERE platform=$1 AND club_id=$2`,[club.platform||DEFAULT_PLATFORM,String(club.club_id)]);
+  try{await syncClub(store,{club_id:club.club_id,name:club.name},club.platform||PLATFORM)}catch(e){console.warn(`[PRIORITY22] sync ${club.club_id}: ${e.message}`)}
+  const fresh=await store.one(`SELECT platform,club_id,name FROM clubs WHERE platform=$1 AND club_id=$2`,[club.platform||PLATFORM,String(club.club_id)]);
   if(fresh?.name)club={...club,name:fresh.name};
-  const players=await store.q(`SELECT name,player_id,club_name FROM players WHERE platform=$1 AND club_id=$2 ORDER BY updated_at DESC`,[club.platform||DEFAULT_PLATFORM,String(club.club_id)]);
-  const hits=knownHits(players),nameScore=isTargetName(club.name)?200:0,exact=norm(club.name)==='lesmannequins'?200:0;
-  return{club,players,hits,score:exact+nameScore+hits*150};
+  const players=await store.q(`SELECT name,player_id,club_name FROM players WHERE platform=$1 AND club_id=$2 ORDER BY updated_at DESC`,[club.platform||PLATFORM,String(club.club_id)]);
+  const hits=knownHits(players),nameScore=isTargetName(club.name)?250:0,exact=norm(club.name)==='lesmannequins'?250:0;
+  return{club,players,hits,score:exact+nameScore+hits*180};
 }
 
 async function directEaSearch(store,found){
-  for(const platform of PLATFORMS){
-    for(const q of QUERIES){
-      for(const endpoint of ['/currentSeasonLeaderboard/search','/allTimeLeaderboard/search']){
-        try{
-          const payload=await ea(endpoint,{platform,clubName:q,maxResultCount:50});
-          const clubs=await extractClubs(store,payload,platform);
-          const names=clubs.slice(0,8).map(c=>`${c.name}#${c.id}`).join(' | ');
-          console.log(`[PRIORITY22] EA search platform=${platform} q="${q}" endpoint=${endpoint} results=${clubs.length}${names?` :: ${names}`:''}`);
-          for(const c of clubs){
-            if(isTargetName(c.name)){
-              found.set(`${platform}|${c.id}`,{platform,club_id:String(c.id),name:c.name});
-              console.log(`[PRIORITY22] NAME HIT platform=${platform} club=${c.name} id=${c.id}`);
-            }
+  for(const q of QUERIES){
+    for(const endpoint of ['/currentSeasonLeaderboard/search','/allTimeLeaderboard/search']){
+      try{
+        const payload=await ea(endpoint,{platform:PLATFORM,clubName:q,maxResultCount:50});
+        const clubs=await extractClubs(store,payload,PLATFORM);
+        console.log(`[PRIORITY22] EA search q="${q}" endpoint=${endpoint} results=${clubs.length}`);
+        for(const c of clubs){
+          if(isTargetName(c.name)){
+            found.set(`${PLATFORM}|${c.id}`,{platform:PLATFORM,club_id:String(c.id),name:c.name});
+            console.log(`[PRIORITY22] NAME HIT club=${c.name} id=${c.id}`);
           }
-        }catch(e){console.warn(`[PRIORITY22] EA search failed platform=${platform} q="${q}" endpoint=${endpoint}: ${e.message}`)}
-        await sleep(gap());
-      }
-      if(found.size)break;
+        }
+      }catch(e){console.warn(`[PRIORITY22] EA search failed q="${q}" endpoint=${endpoint}: ${e.message}`)}
+      await sleep(gap());
     }
-    if(found.size)break;
+    if(found.size)return;
   }
 }
 
+async function initialCursor(store){
+  const saved=Number(await store.meta(META_CURSOR,'0'))||0;
+  if(saved>1)return saved;
+  try{
+    const r=await store.one(`SELECT COALESCE(MAX(club_id::bigint),0) max_id FROM clubs WHERE platform=$1 AND club_id ~ '^[0-9]+$'`,[PLATFORM]);
+    const maxId=Number(r?.max_id||0);
+    if(maxId>0){
+      const start=Math.max(1,maxId-1200);
+      console.log(`[PRIORITY22] seeding ID cursor near active range maxKnown=${maxId} start=${start}`);
+      return start;
+    }
+  }catch(e){console.warn(`[PRIORITY22] cursor seed: ${e.message}`)}
+  return 1;
+}
+
 async function individualIdScan(store,found){
-  let cursor=Number(await store.meta(META_CURSOR,'1'))||1;
-  const maxPerRun=160;
-  const upper=Math.max(6000,cursor+maxPerRun);
+  let cursor=await initialCursor(store);
+  const maxPerRun=320;
   console.log(`[PRIORITY22] single-id scan start cursor=${cursor} count=${maxPerRun}`);
-  for(let n=0;n<maxPerRun&&cursor<=upper;n++,cursor++){
+  for(let n=0;n<maxPerRun;n++,cursor++){
     try{
-      const payload=await ea('/clubs/info',{platform:DEFAULT_PLATFORM,clubIds:String(cursor)});
-      const clubs=await extractClubs(store,payload,DEFAULT_PLATFORM);
+      const payload=await ea('/clubs/info',{platform:PLATFORM,clubIds:String(cursor)});
+      const clubs=await extractClubs(store,payload,PLATFORM);
       for(const c of clubs){
         if(isTargetName(c.name)){
-          found.set(`${DEFAULT_PLATFORM}|${c.id}`,{platform:DEFAULT_PLATFORM,club_id:String(c.id),name:c.name});
+          found.set(`${PLATFORM}|${c.id}`,{platform:PLATFORM,club_id:String(c.id),name:c.name});
           console.log(`[PRIORITY22] SINGLE ID NAME HIT club=${c.name} id=${c.id}`);
           await store.setMeta(META_CURSOR,cursor+1);
           return;
@@ -118,8 +128,11 @@ async function individualIdScan(store,found){
     }catch(e){
       if(!String(e.message).includes('400')&&!String(e.message).includes('404'))console.warn(`[PRIORITY22] single id ${cursor}: ${e.message}`);
     }
-    if(n>0&&n%40===0)console.log(`[PRIORITY22] single-id scan progress cursor=${cursor}`);
-    await sleep(360);
+    if(n>0&&n%50===0){
+      await store.setMeta(META_CURSOR,cursor);
+      console.log(`[PRIORITY22] single-id scan progress cursor=${cursor}`);
+    }
+    await sleep(320);
   }
   await store.setMeta(META_CURSOR,cursor);
   console.log(`[PRIORITY22] single-id scan end nextCursor=${cursor}`);
@@ -142,7 +155,7 @@ async function discover(store){
 
   if(!found.size)await directEaSearch(store,found);
   if(!found.size)await individualIdScan(store,found);
-  if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet; persistent single-id scan will continue');return null}
+  if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet; current-gen ID scan will continue');return null}
 
   const scored=[];
   for(const club of [...found.values()].slice(0,20)){
@@ -164,7 +177,7 @@ async function refresh(store){
   if(running||store.mode!=='postgres')return;
   running=true;
   try{
-    const platform=await store.meta(META_PLATFORM,DEFAULT_PLATFORM),clubId=await store.meta(META_CLUB,'');
+    const platform=await store.meta(META_PLATFORM,PLATFORM),clubId=await store.meta(META_CLUB,'');
     if(clubId){
       const club=await store.one(`SELECT platform,club_id,name FROM clubs WHERE platform=$1 AND club_id=$2`,[platform,clubId]);
       if(club){
@@ -183,7 +196,7 @@ const previousInit=Store.prototype.init;
 Store.prototype.init=async function(){
   await previousInit.call(this);
   if(this.mode!=='postgres')return;
-  console.log('[PRIORITY22] Les Mannequins priority indexing enabled + persistent single-ID scan');
-  setTimeout(()=>refresh(this),10000).unref();
-  setInterval(()=>refresh(this),5*60000).unref();
+  console.log('[PRIORITY22] Les Mannequins current-gen fast discovery enabled');
+  setTimeout(()=>refresh(this),7000).unref();
+  setInterval(()=>refresh(this),3*60000).unref();
 };
