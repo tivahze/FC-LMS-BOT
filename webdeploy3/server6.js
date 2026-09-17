@@ -13,5 +13,6 @@ import './sorting16.js';
 import './v10features17.js';
 import './growth18.js';
 import './idSweep20.js';
+import './growthSnapshot21.js';
 import './discordNotify19.js';
 await import('./server5.js');
