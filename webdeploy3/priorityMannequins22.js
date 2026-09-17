@@ -72,12 +72,11 @@ async function directEaSearch(store,found){
     for(const endpoint of ['/currentSeasonLeaderboard/search','/allTimeLeaderboard/search']){
       try{
         const clubs=await extractClubs(store,await ea(endpoint,{platform:PLATFORM,clubName:q,maxResultCount:50}),PLATFORM);
-        console.log(`[PRIORITY22] EA search q="${q}" endpoint=${endpoint} results=${clubs.length}`);
         for(const c of clubs)if(isTargetName(c.name)){
           found.set(`${PLATFORM}|${c.id}`,{platform:PLATFORM,club_id:String(c.id),name:c.name});
           console.log(`[PRIORITY22] NAME HIT club=${c.name} id=${c.id}`);
         }
-      }catch(e){console.warn(`[PRIORITY22] EA search failed q="${q}" endpoint=${endpoint}: ${e.message}`)}
+      }catch(e){console.warn(`[PRIORITY22] EA search ${q}: ${e.message}`)}
       await sleep(gap());
     }
     if(found.size)return;
@@ -89,17 +88,16 @@ async function initialCursor(store){
   if(saved>1)return saved;
   try{
     const r=await store.one(`SELECT COALESCE(MAX(club_id::bigint),0) max_id FROM clubs WHERE platform=$1 AND club_id ~ '^[0-9]+$'`,[PLATFORM]);
-    const maxId=Number(r?.max_id||0),start=maxId>0?Math.max(1,maxId-1200):1;
-    console.log(`[PRIORITY22] seed parallel cursor maxKnown=${maxId} start=${start}`);
+    const maxId=Number(r?.max_id||0),start=maxId>0?Math.max(1,maxId-300):1;
     return start;
-  }catch(e){console.warn(`[PRIORITY22] cursor seed: ${e.message}`);return 1}
+  }catch{return 1}
 }
 
 async function infoOnce(id){
   const u=new URL(BASE+'/clubs/info');
   u.searchParams.set('platform',PLATFORM);u.searchParams.set('clubIds',String(id));
   try{
-    const r=await fetch(u,{headers:{accept:'application/json','accept-language':'fr-FR,fr;q=0.9,en;q=0.8','user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36','referer':'https://www.ea.com/'},signal:AbortSignal.timeout(5000)});
+    const r=await fetch(u,{headers:{accept:'application/json','accept-language':'fr-FR,fr;q=0.9,en;q=0.8','user-agent':'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/153 Safari/537.36','referer':'https://www.ea.com/'},signal:AbortSignal.timeout(4500)});
     if(!r.ok)return null;
     return await r.json();
   }catch{return null}
@@ -107,8 +105,8 @@ async function infoOnce(id){
 
 async function parallelIdScan(store,found){
   let cursor=await initialCursor(store);
-  const total=1200,concurrency=6,start=cursor;
-  console.log(`[PRIORITY22] PARALLEL ID scan start cursor=${cursor} count=${total} concurrency=${concurrency}`);
+  const total=300,concurrency=4,start=cursor;
+  console.log(`[PRIORITY22] LIGHT ID scan start cursor=${cursor} count=${total} concurrency=${concurrency}`);
   for(let done=0;done<total;done+=concurrency){
     const ids=Array.from({length:Math.min(concurrency,total-done)},(_,i)=>cursor+i);
     const payloads=await Promise.all(ids.map(async id=>[id,await infoOnce(id)]));
@@ -118,21 +116,18 @@ async function parallelIdScan(store,found){
         const clubs=await extractClubs(store,payload,PLATFORM);
         for(const c of clubs)if(isTargetName(c.name)){
           found.set(`${PLATFORM}|${c.id}`,{platform:PLATFORM,club_id:String(c.id),name:c.name});
-          console.log(`[PRIORITY22] PARALLEL ID NAME HIT club=${c.name} id=${c.id} probe=${id}`);
+          console.log(`[PRIORITY22] LIGHT ID NAME HIT club=${c.name} id=${c.id} probe=${id}`);
           await store.setMeta(META_CURSOR,Math.max(...ids)+1);
           return;
         }
       }catch(e){console.warn(`[PRIORITY22] parse id ${id}: ${e.message}`)}
     }
     cursor+=ids.length;
-    if(cursor-start>=100&&((cursor-start)%100)<concurrency){
-      await store.setMeta(META_CURSOR,cursor);
-      console.log(`[PRIORITY22] PARALLEL scan progress cursor=${cursor}`);
-    }
-    await sleep(120);
+    if(cursor-start>=100&&((cursor-start)%100)<concurrency)await store.setMeta(META_CURSOR,cursor);
+    await sleep(250);
   }
   await store.setMeta(META_CURSOR,cursor);
-  console.log(`[PRIORITY22] PARALLEL ID scan end nextCursor=${cursor}`);
+  console.log(`[PRIORITY22] LIGHT ID scan end nextCursor=${cursor}`);
 }
 
 async function discover(store){
@@ -144,18 +139,17 @@ async function discover(store){
     console.log(`[PRIORITY22] roster candidate ${c.name||c.club_id} id=${c.club_id} knownHits=${c.hits}`);
   }
   const local=await store.q(`SELECT platform,club_id,name FROM clubs WHERE name_norm LIKE '%mannequin%' OR name_norm IN ('fclms','lmsfc') ORDER BY updated_at DESC LIMIT 50`);
-  for(const c of local){found.set(`${c.platform}|${c.club_id}`,c);console.log(`[PRIORITY22] local name candidate platform=${c.platform} club=${c.name} id=${c.club_id}`)}
+  for(const c of local)found.set(`${c.platform}|${c.club_id}`,c);
   if(!found.size)await directEaSearch(store,found);
   if(!found.size)await parallelIdScan(store,found);
-  if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet; PARALLEL current-gen scan will continue');return null}
+  if(!found.size){console.warn('[PRIORITY22] Les Mannequins not found yet; light scan will continue');return null}
 
   const scored=[];
   for(const club of [...found.values()].slice(0,20)){scored.push(await hydrateAndScore(store,club));await sleep(gap())}
   scored.sort((a,b)=>b.score-a.score||b.players.length-a.players.length);
-  for(const x of scored.slice(0,8))console.log(`[PRIORITY22] candidate ${x.club.name} id=${x.club.club_id} platform=${x.club.platform} players=${x.players.length} knownHits=${x.hits} score=${x.score}`);
   const best=scored[0];
   if(!best)return null;
-  if(!isTargetName(best.club.name)&&best.hits<2){console.warn(`[PRIORITY22] candidates found but confidence too low best=${best.club.name} hits=${best.hits}`);return null}
+  if(!isTargetName(best.club.name)&&best.hits<2)return null;
   await markPriority(store,best.club);
   console.log(`[PRIORITY22] selected ${best.club.name} id=${best.club.club_id} platform=${best.club.platform} players=${best.players.length} knownHits=${best.hits}`);
   if(best.players.length)console.log(`[PRIORITY22] roster ${best.players.map(x=>x.name).join(', ')}`);
@@ -172,7 +166,6 @@ async function refresh(store){
       if(club){
         const scored=await hydrateAndScore(store,club);await markPriority(store,scored.club);
         console.log(`[PRIORITY22] refreshed ${scored.club.name} id=${scored.club.club_id} players=${scored.players.length} knownHits=${scored.hits}`);
-        if(scored.players.length)console.log(`[PRIORITY22] roster ${scored.players.map(x=>x.name).join(', ')}`);
         return;
       }
     }
@@ -184,7 +177,7 @@ const previousInit=Store.prototype.init;
 Store.prototype.init=async function(){
   await previousInit.call(this);
   if(this.mode!=='postgres')return;
-  console.log('[PRIORITY22] Les Mannequins PARALLEL current-gen discovery enabled');
-  setTimeout(()=>refresh(this),5000).unref();
-  setInterval(()=>refresh(this),2*60000).unref();
+  console.log('[PRIORITY22] Les Mannequins LIGHT discovery enabled');
+  setTimeout(()=>refresh(this),15000).unref();
+  setInterval(()=>refresh(this),5*60000).unref();
 };
