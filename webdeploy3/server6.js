@@ -1,3 +1,4 @@
+import './eaBrowserHeaders24.js';
 import './integrity6.js';
 import './backfill7.js';
 import './opponents8.js';
