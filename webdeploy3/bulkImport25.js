@@ -70,6 +70,36 @@ function decodeBody(raw,contentType){
   return JSON.parse(s||'{}');
 }
 
+function dedupeClubs(rows){
+  const map=new Map();
+  for(const r of rows){
+    const prev=map.get(r.uid);
+    if(!prev){map.set(r.uid,r);continue}
+    map.set(r.uid,{...prev,...r,
+      skill:r.skill>0?r.skill:prev.skill,
+      wins:Math.max(prev.wins,r.wins),draws:Math.max(prev.draws,r.draws),
+      losses:Math.max(prev.losses,r.losses),games:Math.max(prev.games,r.games),
+      raw_json:r.raw_json?.length>2?r.raw_json:prev.raw_json
+    });
+  }
+  return[...map.values()];
+}
+
+function dedupePlayers(rows){
+  const map=new Map();
+  for(const r of rows){
+    const prev=map.get(r.uid);
+    if(!prev){map.set(r.uid,r);continue}
+    map.set(r.uid,{...prev,...r,
+      club_id:r.club_id||prev.club_id,club_name:r.club_name||prev.club_name,
+      games:Math.max(prev.games,r.games),goals:Math.max(prev.goals,r.goals),assists:Math.max(prev.assists,r.assists),
+      rating:r.rating>0?r.rating:prev.rating,
+      raw_json:r.raw_json?.length>2?r.raw_json:prev.raw_json
+    });
+  }
+  return[...map.values()];
+}
+
 function splitPayload(payload,defaultPlatform){
   let clubs=[],players=[];
   if(Array.isArray(payload)){
@@ -87,6 +117,7 @@ function splitPayload(payload,defaultPlatform){
       const r=looksPlayer?playerRow(payload,dp):clubRow(payload,dp);if(r)(looksPlayer?players:clubs).push(r);
     }
   }
+  clubs=dedupeClubs(clubs);players=dedupePlayers(players);
   return{clubs,players};
 }
 
