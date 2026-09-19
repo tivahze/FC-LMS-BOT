@@ -6,7 +6,8 @@ import {Store} from './store5.js';
 import {LABEL,norm} from './constants.js';
 import {crawl,runCrawler,liveDiscover,syncClub} from './crawler5.js';
 const DIR=path.dirname(fileURLToPath(import.meta.url)),HOST=process.env.HOST||'0.0.0.0',PORT=Number(process.env.PORT||3000),store=new Store();
-await store.init();
+let storeReady=false,storeInitError='';
+store.init().then(()=>{storeReady=true;console.log('[BOOT] store initialization complete')}).catch(e=>{storeInitError=e?.message||String(e);console.error('[BOOT] store initialization failed:',storeInitError)});
 if(store.mode==='postgres'){
   try{await store.pool.query(`UPDATE players SET rating=CASE WHEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision>10 THEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision/10 ELSE NULLIF(raw_json::jsonb->>'ratingAve','')::double precision END WHERE rating=0 AND raw_json IS NOT NULL AND raw_json<>'' AND raw_json::jsonb ? 'ratingAve'`)}catch(e){console.warn('Rating backfill skipped:',e.message)}
 }
@@ -48,6 +49,8 @@ async function serveMatch(platform,id,req,res){
 }
 const server=http.createServer(async(req,res)=>{try{
   const u=new URL(req.url,'http://local'),pathname=u.pathname;
+  if(pathname==='/api/health')return send(res,200,{ok:true,version:'v9',season:'fc26',storage:store.mode,ready:storeReady,initError:storeInitError||undefined});
+  if(!storeReady&&(pathname.startsWith('/api/')||pathname.startsWith('/fr/player/')||pathname.startsWith('/fr/club/')||pathname.startsWith('/fr/match/')))return send(res,503,{error:'Initialisation en cours',ready:false});
   let m=pathname.match(/^\/fr\/player\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('player',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/club\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('club',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/match\/([^/]+)\/([^/]+)\/?$/);if(m)return serveMatch(decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
@@ -60,7 +63,7 @@ const server=http.createServer(async(req,res)=>{try{
     const base=baseUrl(req);let players=[],clubs=[];if(store.mode==='postgres'){players=await store.q('SELECT platform,player_id,name FROM players ORDER BY updated_at DESC LIMIT 3000');clubs=await store.q('SELECT platform,club_id,name FROM clubs ORDER BY updated_at DESC LIMIT 2000')}
     const urls=[`${base}/`,`${base}/fr/player`,`${base}/fr/club`,`${base}/fr/rankings`,`${base}/fr/compare`,`${base}/fr/records`,`${base}/fr/live`,...players.map(x=>`${base}/fr/player/${encodeURIComponent(x.platform)}/${encodeURIComponent(x.player_id)}/${slug(x.name)}`),...clubs.map(x=>`${base}/fr/club/${encodeURIComponent(x.platform)}/${encodeURIComponent(x.club_id)}/${slug(x.name)}`)];res.writeHead(200,{'content-type':'application/xml; charset=utf-8','cache-control':'public, max-age=3600'});return res.end(`<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">${urls.map(x=>`<url><loc>${xmlEsc(x)}</loc></url>`).join('')}</urlset>`)
   }
-  if(pathname==='/api/health')return send(res,200,{ok:true,version:'v9',season:'fc26',storage:store.mode});if(pathname==='/api/crawl')return send(res,200,crawl);if(pathname==='/api/dashboard')return send(res,200,await store.dashboard());
+if(pathname==='/api/crawl')return send(res,200,crawl);if(pathname==='/api/dashboard')return send(res,200,await store.dashboard());
   if(pathname==='/api/v8/stats')return send(res,200,await cached('v8:stats',15000,()=>store.v8Stats()));
   if(pathname==='/api/v8/search'){const q=(u.searchParams.get('q')||'').trim(),p=u.searchParams.get('platform')||'',limit=Number(u.searchParams.get('limit')||8);if(q.length<1)return send(res,200,{players:[],clubs:[]});const r=await store.v8Search(q,p,limit);return send(res,200,{players:r.players.map(label),clubs:r.clubs.map(label)})}
   if(pathname==='/api/v8/rankings'){const type=u.searchParams.get('type')||'player',metric=u.searchParams.get('metric')||(type==='club'?'skill':'goals'),p=u.searchParams.get('platform')||'',min=Number(u.searchParams.get('minGames')||3),pg=page(u),key=`rank:${type}:${metric}:${p}:${min}:${pg.p}:${pg.limit}`,r=await cached(key,30000,()=>store.v8Rankings(type,metric,p,min,pg.p,pg.limit));return send(res,200,{...r,items:r.items.map(label)})}
