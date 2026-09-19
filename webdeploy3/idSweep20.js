@@ -73,8 +73,8 @@ Store.prototype.init=async function(){
   await prevInit.call(this);if(this.mode!=='postgres')return;
   await this.pool.query(`CREATE TABLE IF NOT EXISTS club_id_probe(platform TEXT NOT NULL,club_id TEXT NOT NULL,state TEXT DEFAULT 'pending',last_run BIGINT DEFAULT 0,source_id TEXT DEFAULT '',priority INTEGER DEFAULT 0,PRIMARY KEY(platform,club_id))`);
   await this.pool.query(`CREATE INDEX IF NOT EXISTS club_id_probe_state_idx ON club_id_probe(platform,state,priority,last_run)`);
-  const seed=await seedAroundKnown(this),q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending FROM club_id_probe WHERE platform=$1`,[PLATFORM]);
-  console.log(`[IDSWEEP20] neighbor discovery ready numericIds=${seed.num} idRange=${seed.min}..${seed.max} queue=${num(q?.pending)} every=${INTERVAL_MINUTES}m batch=${BATCH} radius=${RADIUS} ahead=${AHEAD}`);
+  const q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state IN('pending','retry')) pending FROM club_id_probe WHERE platform=$1`,[PLATFORM]);
+  console.log(`[IDSWEEP20] startup ready queue=${num(q?.pending)}; neighbor seeding deferred`);
   setTimeout(()=>cycle(this).catch(e=>console.warn('[IDSWEEP20]',e.message)),12000).unref();setInterval(()=>cycle(this).catch(e=>console.warn('[IDSWEEP20]',e.message)),INTERVAL_MINUTES*60000).unref();
 };
 const prevDashboard=Store.prototype.dashboard;
