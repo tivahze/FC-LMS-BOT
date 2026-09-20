@@ -41,6 +41,7 @@ function nextTarget(n,type){const steps=type==='players'?[100,250,500,1000,2500,
 function milestoneCard(label,value,type){const target=nextTarget(value,type),prev=type==='players'?(target<=100?0:target<=250?100:target<=500?250:target<=1000?500:target<=2500?1000:target<=5000?2500:target<=10000?5000:Math.floor(value/10000)*10000):(target<=50?0:target<=100?50:target<=250?100:target<=500?250:target<=1000?500:target<=2500?1000:target<=5000?2500:Math.floor(value/5000)*5000),pct=Math.max(2,Math.min(100,((value-prev)/(target-prev||target))*100));return`<div style="padding:14px 15px;border:1px solid #3a2c49;border-radius:15px;background:linear-gradient(145deg,#171020,#0e0b14)"><div style="display:flex;justify-content:space-between;gap:12px;align-items:end;margin-bottom:9px"><div><div style="font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:#9e8bb4;font-weight:900">Prochain palier ${label}</div><b style="font-size:18px;color:#efe9ff">${nf(value)} / ${nf(target)}</b></div><span style="font-size:11px;color:#9f95aa">${Math.max(0,target-value)} restants</span></div><div style="height:8px;background:#0a0710;border-radius:99px;overflow:hidden;border:1px solid #2d2239"><div style="height:100%;width:${pct.toFixed(1)}%;background:linear-gradient(90deg,#7c3aed,#c084fc);box-shadow:0 0 18px #7c3aed88;border-radius:99px"></div></div></div>`}
 function renderMilestones(s){let el=document.getElementById('growthMilestones');if(!el){el=document.createElement('div');el.id='growthMilestones';el.style.cssText='display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:12px;position:relative';const grid=document.querySelector('.growthGrid');grid?.insertAdjacentElement('afterend',el);const st=document.createElement('style');st.textContent='@media(max-width:650px){#growthMilestones{grid-template-columns:1fr!important}}';document.head.appendChild(st)}el.innerHTML=milestoneCard('joueurs',Number(s.players||0),'players')+milestoneCard('clubs',Number(s.clubs||0),'clubs')}
 function renderGrowth(s){const g=s.growth||{};setGrowth('#g1Players','#g1Clubs',g.h1);setGrowth('#g6Players','#g6Clubs',g.h6);setGrowth('#g24Players','#g24Clubs',g.h24);setGrowth('#gAllPlayers','#gAllClubs',g.sinceTracking);renderMilestones(s);const id=s.idSweep||{},ge=s.growthEngine||{},parts=[];if(id.batch)parts.push(`${nf(id.batch)} IDs / ${nf(id.intervalMinutes)} min`);if(ge.hydrateBatch)parts.push(`${nf(ge.hydrateBatch)} clubs hydratés / cycle`);if(s.trackedClubs)parts.push(`${nf(s.trackedClubs)} clubs suivis`);if(!parts.length&&g.snapshotMinutes)parts.push(`instantané toutes les ${nf(g.snapshotMinutes)} min`);$('#indexStatus').textContent=parts.length?parts.join(' • '):'Suivi de croissance actif'}
+function renderQuickStats(s){if(!s)return false;for(const[id,value]of [['#heroPlayers',s.players],['#sPlayers',s.players],['#sClubs',s.clubs],['#sMatches',s.matches],['#sApps',s.appearances]])$(id).textContent=nf(value);if($('#storage'))$('#storage').textContent=s.storage==='postgres'?'PostgreSQL':s.storage==='sqlite'?'Local':(s.storage||'—');return true}
 function renderCoreStats(s,advanced=true){if(!s)return false;const ids=[['#heroPlayers',s.players],['#sPlayers',s.players],['#sClubs',s.clubs],['#sMatches',s.matches],['#sApps',s.appearances]];for(const[id,value]of ids)$(id).textContent=nf(value);if(advanced){renderGrowth(s);$('#qUnresolved').textContent=nf(s.quality?.unresolvedClubs);$('#qDup').textContent=nf(s.quality?.duplicatePlayerGroups);$('#qOrphan').textContent=nf(s.quality?.orphanAppearances);$('#latestMatch').textContent=relative(s.latestMatch);$('#latestUpdate').textContent=relative(s.latestUpdate)}else{$('#indexStatus').textContent='Indexation active • statistiques détaillées temporairement indisponibles';$('#qUnresolved').textContent='—';$('#qDup').textContent='—';$('#qOrphan').textContent='—';$('#latestMatch').textContent='—';$('#latestUpdate').textContent='—';renderMilestones(s)}$('#storage').textContent=s.storage==='postgres'?'PostgreSQL':s.storage==='sqlite'?'Local':(s.storage||'—');return true}
 
 function installSearchKeyboard(){
@@ -57,10 +58,15 @@ function installSearchKeyboard(){
 async function load(){
   $('#activeClubs').innerHTML='<div class="skeleton" style="height:110px"></div><div class="skeleton" style="height:110px"></div><div class="skeleton" style="height:110px"></div>';
   for(const id of ['#heroPlayers','#sPlayers','#sClubs','#sMatches','#sApps'])$(id).textContent='…';
-  $('#indexStatus').textContent='Connexion à la base FC27…';
+  $('#indexStatus').textContent='Chargement FC27…';
 
-  const ready=await waitForApiReady();
-  if(!ready)$('#indexStatus').textContent='La base met plus de temps que prévu à démarrer…';
+  const bootPromise=safeGet('/api/boot-stats',null);
+  const readyPromise=waitForApiReady();
+  const boot=await bootPromise;
+  if(renderQuickStats(boot))$('#indexStatus').textContent='Compteurs chargés • initialisation des statistiques détaillées…';
+
+  const ready=await readyPromise;
+  if(!ready)$('#indexStatus').textContent='Les statistiques détaillées mettent plus de temps que prévu…';
 
   const statsPromise=safeGet('/api/v8/stats',null);
   const sectionsPromise=Promise.all([
