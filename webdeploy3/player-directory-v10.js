@@ -3,7 +3,7 @@ const wait=ms=>new Promise(r=>setTimeout(r,ms));
 async function fastGet(url){let last;for(let i=0;i<4;i++){try{return await get(url)}catch(e){last=e;if(i<3)await wait(550*(i+1))}}throw last}
 const state={page:1,pages:1,total:0,limit:50,timer:null,sort:'games',dir:'desc'};
 const textSorts=new Set(['name','club','position']);
-const archetypeNames={'1':'Shot Stopper','2':'Sweeper Keeper','3':'Progressor','4':'Boss','5':'Engine','6':'Marauder','7':'Recycler','8':'Maestro','9':'Creator','10':'Spark','11':'Magician','12':'Finisher','13':'Target'};
+const archetypeNames={'1':'Dernier rempart','2':'Gardien libéro','3':'Facilitation','4':'Boss','5':'Traque','6':'Trouble-fête','7':'Récupération','8':'Maestro','9':'Création','10':'Étincelle','11':'Magie','12':'Finisseur','13':'Point d’appui'};
 function archetype(p){if(p.archetype_name)return p.archetype_name;try{const r=JSON.parse(p.raw_json||'{}'),id=String(r.archetypeid??r.archetypeId??r.archetype_id??r.buildId??'');return archetypeNames[id]||'—'}catch{return'—'}}
 function rawRating(p){if(+p.rating>0)return+p.rating;try{const r=JSON.parse(p.raw_json||'{}'),v=Number(r.ratingAve??r.rating??0);return v>10&&v<=100?v/10:v}catch{return 0}}
 const positionFr={
