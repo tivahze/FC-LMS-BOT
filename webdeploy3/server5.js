@@ -48,6 +48,20 @@ async function serveMatch(platform,id,req,res){
 const server=http.createServer(async(req,res)=>{try{
   const u=new URL(req.url,'http://local'),pathname=u.pathname;
   if(pathname==='/api/health')return send(res,200,{ok:true,version:'v9',season:'fc27',storage:store.mode,ready:storeReady,initError:storeInitError||undefined});
+  if(pathname==='/api/boot-stats'){
+    try{
+      if(store.mode==='postgres'){
+        const r=(await store.pool.query(`SELECT
+          (SELECT COUNT(*) FROM players) players,
+          (SELECT COUNT(*) FROM clubs) clubs,
+          (SELECT COUNT(*) FROM matches) matches,
+          (SELECT COUNT(*) FROM match_players) appearances`)).rows[0]||{};
+        return send(res,200,{players:Number(r.players||0),clubs:Number(r.clubs||0),matches:Number(r.matches||0),appearances:Number(r.appearances||0),storage:'postgres',ready:storeReady});
+      }
+      const d=await store.dashboard();
+      return send(res,200,{...d,ready:storeReady});
+    }catch(e){return send(res,503,{error:'Compteurs indisponibles',ready:false})}
+  }
   if(!storeReady&&(pathname.startsWith('/api/')||pathname.startsWith('/fr/player/')||pathname.startsWith('/fr/club/')||pathname.startsWith('/fr/match/')))return send(res,503,{error:'Initialisation en cours',ready:false});
   let m=pathname.match(/^\/fr\/player\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('player',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/club\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('club',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
