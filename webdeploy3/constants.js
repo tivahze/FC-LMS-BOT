@@ -1,13 +1,14 @@
 export const BASE = 'https://proclubs.ea.com/api/fc';
+export const CURRENT_SEASON = String(process.env.CURRENT_SEASON||'FC27').toUpperCase();
 export const PLATFORMS = ['common-gen5','common-gen4','nx'];
 export const LABEL = {'common-gen5':'Current Gen','common-gen4':'Last Gen',nx:'Switch'};
 export const MATCH_TYPES = ['friendlyMatch','leagueMatch','playoffMatch'];
 export const sleep = ms => new Promise(r => setTimeout(r, ms));
 export const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
 export const norm = s => String(s ?? '').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'');
-export const cuid = (p,id) => `FC26:${p}:${id}`;
-export const puid = (p,id) => `FC26:${p}:${id}`;
-export const muid = (p,id) => `FC26:${p}:${id}`;
+export const cuid = (p,id) => `${CURRENT_SEASON}:${p}:${id}`;
+export const puid = (p,id) => `${CURRENT_SEASON}:${p}:${id}`;
+export const muid = (p,id) => `${CURRENT_SEASON}:${p}:${id}`;
 export const now = () => Math.floor(Date.now()/1000);
 export const gap = () => Math.max(350, Number(process.env.EA_REQUEST_GAP_MS || 600));
 
