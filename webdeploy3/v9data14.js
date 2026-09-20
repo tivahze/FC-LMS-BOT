@@ -3,7 +3,7 @@ import {num} from './constants.js';
 
 const scoreFor=(m,id)=>{const home=String(m.home_club_id)===String(id),gf=home?num(m.home_goals):num(m.away_goals),ga=home?num(m.away_goals):num(m.home_goals);return{gf,ga,result:gf>ga?'V':gf<ga?'D':'N'}};
 
-Store.prototype.v9Seasons=async function(){return{current:'fc26',items:[{id:'fc26',label:'FC 26',available:true},{id:'fc27',label:'FC 27',available:false,status:'À venir'}]}};
+Store.prototype.v9Seasons=async function(){return{current:'fc27',items:[{id:'fc27',label:'FC 27',available:true,current:true},{id:'fc26',label:'FC 26',available:true,archived:true,status:'Archive'}]}};
 
 Store.prototype.v9Match=async function(platform,matchId){
   if(this.mode!=='postgres')return null;
