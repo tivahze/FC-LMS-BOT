@@ -18,63 +18,74 @@ Store.prototype.init=async function(){
   await previousInit.call(this);
   if(this.mode!=='postgres')return;
 
-  await this.pool.query(`
-    CREATE TABLE IF NOT EXISTS fc26_clubs_archive AS SELECT * FROM clubs WHERE FALSE;
-    CREATE TABLE IF NOT EXISTS fc26_players_archive AS SELECT * FROM players WHERE FALSE;
-    CREATE TABLE IF NOT EXISTS fc26_matches_archive AS SELECT * FROM matches WHERE FALSE;
-    CREATE TABLE IF NOT EXISTS fc26_match_players_archive AS SELECT * FROM match_players WHERE FALSE;
-    CREATE INDEX IF NOT EXISTS fc26_clubs_archive_name_idx ON fc26_clubs_archive(name_norm);
-    CREATE INDEX IF NOT EXISTS fc26_players_archive_name_idx ON fc26_players_archive(name_norm);
-    CREATE INDEX IF NOT EXISTS fc26_matches_archive_ts_idx ON fc26_matches_archive(ts DESC);
-  `);
-
-  const done=(await this.one('SELECT value FROM meta WHERE key=$1',[MIGRATION_KEY]))?.value;
-  if(done==='1'){
-    await this.setMeta('season:current',CURRENT);
-    return;
-  }
-
-  const before=await this.one(`SELECT
-    (SELECT COUNT(*) FROM clubs) clubs,
-    (SELECT COUNT(*) FROM players) players,
-    (SELECT COUNT(*) FROM matches) matches,
-    (SELECT COUNT(*) FROM match_players) appearances`);
-
-  const client=await this.pool.connect();
+  const lock=await this.pool.connect();
   try{
-    await client.query('BEGIN');
-    await client.query('DELETE FROM fc26_match_players_archive');
-    await client.query('DELETE FROM fc26_matches_archive');
-    await client.query('DELETE FROM fc26_players_archive');
-    await client.query('DELETE FROM fc26_clubs_archive');
-    await client.query('INSERT INTO fc26_clubs_archive SELECT * FROM clubs');
-    await client.query('INSERT INTO fc26_players_archive SELECT * FROM players');
-    await client.query('INSERT INTO fc26_matches_archive SELECT * FROM matches');
-    await client.query('INSERT INTO fc26_match_players_archive SELECT * FROM match_players');
+    await lock.query('SELECT pg_advisory_lock(270027)');
+    await lock.query(`
+      CREATE TABLE IF NOT EXISTS fc26_clubs_archive AS SELECT * FROM clubs WHERE FALSE;
+      CREATE TABLE IF NOT EXISTS fc26_players_archive AS SELECT * FROM players WHERE FALSE;
+      CREATE TABLE IF NOT EXISTS fc26_matches_archive AS SELECT * FROM matches WHERE FALSE;
+      CREATE TABLE IF NOT EXISTS fc26_match_players_archive AS SELECT * FROM match_players WHERE FALSE;
+      CREATE INDEX IF NOT EXISTS fc26_clubs_archive_name_idx ON fc26_clubs_archive(name_norm);
+      CREATE INDEX IF NOT EXISTS fc26_players_archive_name_idx ON fc26_players_archive(name_norm);
+      CREATE INDEX IF NOT EXISTS fc26_matches_archive_ts_idx ON fc26_matches_archive(ts DESC);
+    `);
 
-    await client.query('DELETE FROM match_players');
-    await client.query('DELETE FROM matches');
-    await client.query('DELETE FROM players');
-    await client.query('DELETE FROM clubs');
+    const done=(await lock.query('SELECT value FROM meta WHERE key=$1',[MIGRATION_KEY])).rows[0]?.value;
+    if(done==='1'){
+      await lock.query(`INSERT INTO meta(key,value) VALUES('season:current',$1) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`,[CURRENT]);
+      return;
+    }
 
-    await client.query(`DELETE FROM meta WHERE
-      key LIKE 'cursor:%' OR key LIKE 'mass23:%' OR key LIKE 'priority:%' OR
-      key LIKE 'idsweep:%' OR key LIKE 'growth:%' OR key LIKE 'discovery:%'`);
-    await client.query(`INSERT INTO meta(key,value) VALUES($1,'1') ON CONFLICT(key) DO UPDATE SET value='1'`,[MIGRATION_KEY]);
-    await client.query(`INSERT INTO meta(key,value) VALUES('season:current',$1) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`,[CURRENT]);
-    await client.query('COMMIT');
-  }catch(e){
-    await client.query('ROLLBACK');
-    throw e;
-  }finally{client.release()}
+    const before=(await lock.query(`SELECT
+      (SELECT COUNT(*) FROM clubs) clubs,
+      (SELECT COUNT(*) FROM players) players,
+      (SELECT COUNT(*) FROM matches) matches,
+      (SELECT COUNT(*) FROM match_players) appearances`)).rows[0];
 
-  for(const name of ['watched_clubs','growth_queries','club_id_probe','private_harvest23','growth_snapshots']){
-    try{await clearIfExists(this,name)}catch(e){console.warn(`[FC27] cleanup ${name}: ${e.message}`)}
+    try{
+      await lock.query('BEGIN');
+      await lock.query(`SET LOCAL lock_timeout = '45s'`);
+      await lock.query('LOCK TABLE clubs,players,matches,match_players IN ACCESS EXCLUSIVE MODE');
+
+      await lock.query('DELETE FROM fc26_match_players_archive');
+      await lock.query('DELETE FROM fc26_matches_archive');
+      await lock.query('DELETE FROM fc26_players_archive');
+      await lock.query('DELETE FROM fc26_clubs_archive');
+      await lock.query('INSERT INTO fc26_clubs_archive SELECT * FROM clubs');
+      await lock.query('INSERT INTO fc26_players_archive SELECT * FROM players');
+      await lock.query('INSERT INTO fc26_matches_archive SELECT * FROM matches');
+      await lock.query('INSERT INTO fc26_match_players_archive SELECT * FROM match_players');
+
+      await lock.query('DELETE FROM match_players');
+      await lock.query('DELETE FROM matches');
+      await lock.query('DELETE FROM players');
+      await lock.query('DELETE FROM clubs');
+
+      await lock.query(`DELETE FROM meta WHERE
+        key LIKE 'cursor:%' OR key LIKE 'mass23:%' OR key LIKE 'priority:%' OR
+        key LIKE 'idsweep:%' OR key LIKE 'growth:%' OR key LIKE 'discovery:%'`);
+      await lock.query(`INSERT INTO meta(key,value) VALUES($1,'1') ON CONFLICT(key) DO UPDATE SET value='1'`,[MIGRATION_KEY]);
+      await lock.query(`INSERT INTO meta(key,value) VALUES('season:current',$1) ON CONFLICT(key) DO UPDATE SET value=EXCLUDED.value`,[CURRENT]);
+      await lock.query('COMMIT');
+    }catch(e){
+      try{await lock.query('ROLLBACK')}catch{}
+      throw e;
+    }
+
+    for(const name of ['watched_clubs','growth_queries','club_id_probe','private_harvest23','growth_snapshots']){
+      try{
+        const exists=(await lock.query('SELECT to_regclass($1) name',[name])).rows[0]?.name;
+        if(exists)await lock.query(`DELETE FROM ${name}`);
+      }catch(e){console.warn(`[FC27] cleanup ${name}: ${e.message}`)}
+    }
+
+    console.log(`[FC27] migration complete: archived FC26 clubs=${num(before?.clubs)} players=${num(before?.players)} matches=${num(before?.matches)} appearances=${num(before?.appearances)}; live tables reset for FC27`);
+  }finally{
+    try{await lock.query('SELECT pg_advisory_unlock(270027)')}catch{}
+    lock.release();
   }
-
-  console.log(`[FC27] migration complete: archived FC26 clubs=${num(before?.clubs)} players=${num(before?.players)} matches=${num(before?.matches)} appearances=${num(before?.appearances)}; live tables reset for FC27`);
 };
-
 Store.prototype.fc26ArchiveSummary=async function(){
   if(this.mode!=='postgres')return{season:'fc26',clubs:0,players:0,matches:0,appearances:0};
   const r=await this.one(`SELECT
