@@ -12,6 +12,18 @@ async function safeGet(url,fallback){
   return typeof fallback==='function'?fallback(last):fallback;
 }
 const empty=msg=>`<div class="empty">${esc(msg)}</div>`;
+async function waitForApiReady(maxMs=45000){
+  const start=Date.now();
+  while(Date.now()-start<maxMs){
+    try{
+      const h=await get('/api/health');
+      if(h?.ready)return true;
+      $('#indexStatus').textContent='Initialisation de la base FC27…';
+    }catch{}
+    await sleep(700);
+  }
+  return false;
+}
 const itemsOf=x=>Array.isArray(x?.items)?x.items:[];
 
 function linePlayer(p,i){return`<a class="line" href="${playerUrl(p)}"><span><b>#${i+1} ${esc(p.name)}</b><span class="small muted"> • ${esc(p.club_name||'Sans club')}</span></span><span><b>${nf(p.goals)}</b> buts</span></a>`}
@@ -44,6 +56,11 @@ function installSearchKeyboard(){
 
 async function load(){
   $('#activeClubs').innerHTML='<div class="skeleton" style="height:110px"></div><div class="skeleton" style="height:110px"></div><div class="skeleton" style="height:110px"></div>';
+  for(const id of ['#heroPlayers','#sPlayers','#sClubs','#sMatches','#sApps'])$(id).textContent='…';
+  $('#indexStatus').textContent='Connexion à la base FC27…';
+
+  const ready=await waitForApiReady();
+  if(!ready)$('#indexStatus').textContent='La base met plus de temps que prévu à démarrer…';
 
   const statsPromise=safeGet('/api/v8/stats',null);
   const sectionsPromise=Promise.all([
@@ -64,7 +81,8 @@ async function load(){
     stats=await safeGet('/api/dashboard',null);
     if(!renderCoreStats(stats,false)){
       $('#indexStatus').textContent='Connexion aux statistiques en cours…';
-      for(const id of ['#heroPlayers','#sPlayers','#sClubs','#sMatches','#sApps'])$(id).textContent='—';
+      for(const id of ['#heroPlayers','#sPlayers','#sClubs','#sMatches','#sApps'])$(id).textContent='…';
+      setTimeout(()=>load().catch(console.error),2500);
     }
   }
 
