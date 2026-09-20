@@ -136,42 +136,6 @@ async function cycle(store){
   finally{state.running=false;running=false}
 }
 
-async function seedLiveIndex(store){
-  if(store.mode!=='postgres')return;
-  try{
-    await store.pool.query(`WITH sides AS (
-        SELECT platform,home_club_id club_id,MAX(ts) latest FROM matches WHERE platform=$1 AND home_club_id<>'' GROUP BY platform,home_club_id
-        UNION ALL
-        SELECT platform,away_club_id club_id,MAX(ts) latest FROM matches WHERE platform=$1 AND away_club_id<>'' GROUP BY platform,away_club_id
-      ), latest AS (
-        SELECT platform,club_id,MAX(latest) latest FROM sides GROUP BY platform,club_id
-      )
-      INSERT INTO live_index27(platform,club_id,name,last_poll,latest_match,last_new_match,next_type,last_roster,state,errors,last_error)
-      SELECT c.platform,c.club_id,c.name,0,COALESCE(l.latest,0),0,0,0,'new',0,''
-      FROM clubs c LEFT JOIN latest l ON l.platform=c.platform AND l.club_id=c.club_id
-      WHERE c.platform=$1 AND c.club_id ~ '^[0-9]+
-
-const previousUpsertClub=Store.prototype.upsertClub;
-Store.prototype.upsertClub=async function(x,platform){
-  await previousUpsertClub.call(this,x,platform);
-  if(x?.id)await ensure(this,platform,x.id,x.name||'');
-};
-
-const previousDashboard=Store.prototype.dashboard;
-Store.prototype.dashboard=async function(){
-  const d=await previousDashboard.call(this);if(this.mode!=='postgres')return d;
-  let q={total:0,hot:0,warm:0,active:0,cold:0,polled:0};
-  try{q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='hot') hot,COUNT(*) FILTER(WHERE state='warm') warm,COUNT(*) FILTER(WHERE state='active') active,COUNT(*) FILTER(WHERE state IN('cold','cooldown','new')) cold,COUNT(*) FILTER(WHERE last_poll>0) polled FROM live_index27 WHERE platform=$1`,[PLATFORM])||q}catch(e){if(e?.code!=='42P01')console.warn('[LIVE27 dashboard]',e.message)}
-  return{...d,live27:{...state,total:num(q.total),hot:num(q.hot),warm:num(q.warm),active:num(q.active),cold:num(q.cold),polledTotal:num(q.polled),loopSeconds:LOOP_SECONDS,batch:BATCH,hotSeconds:HOT_SECONDS,warmSeconds:WARM_SECONDS,activeSeconds:ACTIVE_SECONDS,coldSeconds:COLD_SECONDS}};
-};
-
-console.log('[LIVE27] FC27 live match indexer enabled');
-
-      ON CONFLICT(platform,club_id) DO UPDATE SET name=EXCLUDED.name,latest_match=GREATEST(live_index27.latest_match,EXCLUDED.latest_match)`,[PLATFORM]);
-    const q=await store.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='hot') hot,COUNT(*) FILTER(WHERE last_poll>0) polled FROM live_index27 WHERE platform=$1`,[PLATFORM]);
-    console.log(`[LIVE27] background seed complete clubs=${num(q?.total)} polled=${num(q?.polled)} hot=${num(q?.hot)}`);
-  }catch(e){console.warn('[LIVE27] background seed:',e.message)}
-}
 const previousInit=Store.prototype.init;
 Store.prototype.init=async function(){
   await previousInit.call(this);if(this.mode!=='postgres')return;
@@ -180,9 +144,13 @@ Store.prototype.init=async function(){
     last_new_match BIGINT DEFAULT 0,next_type INTEGER DEFAULT 0,last_roster BIGINT DEFAULT 0,state TEXT DEFAULT 'new',
     errors INTEGER DEFAULT 0,last_error TEXT DEFAULT '',PRIMARY KEY(platform,club_id));
     CREATE INDEX IF NOT EXISTS live_index27_due_idx ON live_index27(platform,last_poll,latest_match,state);`);
+  const seedLive=()=>this.pool.query(`INSERT INTO live_index27(platform,club_id,name,last_poll,latest_match,last_new_match,next_type,last_roster,state,errors,last_error)
+    SELECT platform,club_id,name,0,COALESCE((SELECT MAX(ts) FROM matches m WHERE m.platform=c.platform AND (m.home_club_id=c.club_id OR m.away_club_id=c.club_id)),0),0,0,0,'new',0,''
+    FROM clubs c WHERE platform=$1 AND club_id ~ '^[0-9]+$'
+    ON CONFLICT(platform,club_id) DO UPDATE SET name=EXCLUDED.name`,[PLATFORM].then(()=>console.log('[LIVE27] background full seed complete')).catch(e=>console.warn('[LIVE27] background seed:',e.message));
+  setTimeout(seedLive,1200).unref();
   const q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='hot') hot,COUNT(*) FILTER(WHERE last_poll>0) polled FROM live_index27 WHERE platform=$1`,[PLATFORM]);
   console.log(`[LIVE27] adaptive live indexer ready immediately clubs=${num(q?.total)} polled=${num(q?.polled)} hot=${num(q?.hot)} loop=${LOOP_SECONDS}s batch=${BATCH}; full seed background`);
-  setTimeout(()=>seedLiveIndex(this),1200).unref();
   setTimeout(()=>cycle(this),7000).unref();
   setInterval(()=>cycle(this),LOOP_SECONDS*1000).unref();
 };
