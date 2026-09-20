@@ -2,7 +2,7 @@ import {Store} from './store5.js';
 import {norm,num} from './constants.js';
 
 const API='https://api.club-champions.eu/cc/player';
-const SEASON='FC26';
+const SEASON='FC27';
 const PLATFORM='common-gen5';
 const CACHE_TTL=Math.max(60000,Number(process.env.CC27_CACHE_MS||21600000));
 const GAP=Math.max(1000,Number(process.env.CC27_REQUEST_GAP_MS||1200));
