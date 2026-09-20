@@ -20,15 +20,16 @@ Store.prototype.paged=async function(table,q,p,sort,page,limit){
     const exprs={name:'name',platform:'platform',skill:'skill',games:'games',wins:'wins',draws:'draws',losses:'losses',winrate:`CASE WHEN games>0 THEN wins::double precision/games*100 ELSE 0 END`,recent:'updated_at'};const expr=exprs[spec.key]||exprs.skill;
     const minGames=safeNum(f.mg,0,100000),minSkill=safeNum(f.ms,0,100000),minWr=safeNum(f.mw,0,100),days=safeNum(f.ad,0,3650);
     const cond=`($1='' OR platform=$1) AND ($2='' OR name_norm LIKE $3) AND games>=${minGames} AND skill>=${minSkill} AND (CASE WHEN games>0 THEN wins::double precision/games*100 ELSE 0 END)>=${minWr}${days?` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`:''}`;
-    const total=num((await this.one(`SELECT COUNT(*) c FROM clubs WHERE ${cond}`,[p||'',q||'',pat]))?.c);
-    const items=await this.q(`SELECT platform,club_id,name,skill,wins,draws,losses,games,updated_at FROM clubs WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $4 OFFSET $5`,[p||'',q||'',pat,limit,offset]);return{total,items};
+    const items=await this.q(`SELECT platform,club_id,name,skill,wins,draws,losses,games,updated_at,COUNT(*) OVER() total_count FROM clubs WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $4 OFFSET $5`,[p||'',q||'',pat,limit,offset]);
+    const total=num(items[0]?.total_count);return{total,items};
   }
   const exprs={name:'name',club:'club_name',platform:'platform',position:playerPosition,rating:'rating',games:'games',goals:'goals',assists:'assists',contributions:'(goals+assists)',recent:'updated_at'};const expr=exprs[spec.key]||exprs.games;
   const minGames=safeNum(f.mg,0,100000),minRating=safeNum(f.mr,0,10),minGoals=safeNum(f.mb,0,100000),minAssists=safeNum(f.ma,0,100000),days=safeNum(f.ad,0,3650),role=['gk','def','mid','fwd'].includes(f.pos)?f.pos:'',club=String(f.club||'').trim().toLowerCase();
   const params=[p||'',q||'',pat];let cond=`($1='' OR platform=$1) AND ($2='' OR name_norm LIKE $3) AND games>=${minGames} AND rating>=${minRating} AND goals>=${minGoals} AND assists>=${minAssists}`;
   if(role)cond+=` AND ${roleSql(role,playerPosition)}`;if(days)cond+=` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`;if(club){params.push(`%${club}%`);cond+=` AND lower(COALESCE(club_name,'')) LIKE $${params.length}`}
-  const total=num((await this.one(`SELECT COUNT(*) c FROM players WHERE ${cond}`,params))?.c);params.push(limit,offset);const lp=params.length-1,op=params.length;
-  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,${playerPosition} position FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $${lp} OFFSET $${op}`,params);return{total,items};
+  params.push(limit,offset);const lp=params.length-1,op=params.length;
+  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,${playerPosition} position,COUNT(*) OVER() total_count FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT ${lp} OFFSET ${op}`,params);
+  const total=num(items[0]?.total_count);return{total,items};
 };
 
 Store.prototype.v8Rankings=async function(type='player',metric='goals:desc',platform='',minGames=3,page=1,limit=50){
