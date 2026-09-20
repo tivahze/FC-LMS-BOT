@@ -27,9 +27,9 @@ Store.prototype.paged=async function(table,q,p,sort,page,limit){
   const exprs={name:'name',club:'club_name',platform:'platform',position:playerPosition,rating:'rating',games:'games',goals:'goals',assists:'assists',contributions:'(goals+assists)',recent:'updated_at'};const expr=exprs[spec.key]||exprs.games;
   const minGames=safeNum(f.mg,0,100000),minRating=safeNum(f.mr,0,10),minGoals=safeNum(f.mb,0,100000),minAssists=safeNum(f.ma,0,100000),days=safeNum(f.ad,0,3650),club=String(f.club||'').trim().toLowerCase(),archIds=String(f.arch||'').split(',').map(x=>String(Number(x))).filter(x=>/^(?:[1-9]|1[0-3])$/.test(x));
   const params=[p||'',q||'',pat];let cond=`($1='' OR platform=$1) AND ($2='' OR name_norm LIKE $3) AND games>=${minGames} AND rating>=${minRating} AND goals>=${minGoals} AND assists>=${minAssists}`;
-  if(archIds.length)cond+=` AND ${playerArchetype} IN (${archIds.map(x=>`'${x}'`).join(',')})`;if(days)cond+=` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`;if(club){params.push(`%${club}%`);cond+=` AND lower(COALESCE(club_name,'')) LIKE ${params.length}`}
+  if(archIds.length)cond+=` AND ${playerArchetype} IN (${archIds.map(x=>`'${x}'`).join(',')})`;if(days)cond+=` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`;if(club){params.push(`%${club}%`);cond+=` AND lower(COALESCE(club_name,'')) LIKE $${params.length}`}
   params.push(limit,offset);const lp=params.length-1,op=params.length;
-  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,${playerPosition} position,COUNT(*) OVER() total_count FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT ${lp} OFFSET ${op}`,params);
+  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,${playerPosition} position,COUNT(*) OVER() total_count FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $${lp} OFFSET $${op}`,params);
   const total=num(items[0]?.total_count);return{total,items};
 };
 
