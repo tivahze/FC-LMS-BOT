@@ -82,6 +82,39 @@ const server=http.createServer(async(req,res)=>{try{
       return send(res,503,{ready:false,error:'Records temporairement indisponibles'});
     }
   }
+  if(pathname==='/api/v8/rankings'){
+    const type=u.searchParams.get('type')||'player',metric=u.searchParams.get('metric')||(type==='club'?'skill':'goals'),p=u.searchParams.get('platform')||'',min=Number(u.searchParams.get('minGames')||3),pg=page(u);
+    const key=`rank:${type}:${metric}:${p}:${min}:${pg.p}:${pg.limit}`;
+    try{
+      const r=await cached(key,15000,()=>store.v8Rankings(type,metric,p,min,pg.p,pg.limit));
+      return send(res,200,{...r,items:r.items.map(label),ready:storeReady});
+    }catch(e){
+      console.warn('[RANKINGS API]',e.message);
+      return send(res,503,{items:[],total:0,pages:1,ready:false,error:'Classement temporairement indisponible'});
+    }
+  }
+  if(pathname==='/api/players'){
+    const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',sort=u.searchParams.get('sort')||'games',pg=page(u);
+    const key=`players:${q}:${p}:${sort}:${pg.p}:${pg.limit}`;
+    try{
+      const r=await cached(key,8000,()=>store.paged('players',q,p,sort,pg.p,pg.limit));
+      return send(res,200,{page:pg.p,total:r.total,pages:Math.max(1,Math.ceil(r.total/pg.limit)),items:r.items.map(label),ready:storeReady});
+    }catch(e){
+      console.warn('[PLAYERS API]',e.message);
+      return send(res,503,{page:pg.p,total:0,pages:1,items:[],ready:false,error:'Liste des joueurs temporairement indisponible'});
+    }
+  }
+  if(pathname==='/api/clubs'){
+    const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',sort=u.searchParams.get('sort')||'skill',pg=page(u);
+    const key=`clubs:${q}:${p}:${sort}:${pg.p}:${pg.limit}`;
+    try{
+      const r=await cached(key,8000,()=>store.paged('clubs',q,p,sort,pg.p,pg.limit));
+      return send(res,200,{page:pg.p,total:r.total,pages:Math.max(1,Math.ceil(r.total/pg.limit)),items:r.items.map(label),ready:storeReady});
+    }catch(e){
+      console.warn('[CLUBS API]',e.message);
+      return send(res,503,{page:pg.p,total:0,pages:1,items:[],ready:false,error:'Liste des clubs temporairement indisponible'});
+    }
+  }
   if(!storeReady&&(pathname.startsWith('/api/')||pathname.startsWith('/fr/player/')||pathname.startsWith('/fr/club/')||pathname.startsWith('/fr/match/')))return send(res,503,{error:'Initialisation en cours',ready:false});
   let m=pathname.match(/^\/fr\/player\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('player',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/club\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('club',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
@@ -98,7 +131,6 @@ const server=http.createServer(async(req,res)=>{try{
 if(pathname==='/api/crawl')return send(res,200,crawl);if(pathname==='/api/dashboard')return send(res,200,await store.dashboard());
   if(pathname==='/api/v8/stats')return send(res,200,await cached('v8:stats',15000,()=>store.v8Stats()));
   if(pathname==='/api/v8/search'){const q=(u.searchParams.get('q')||'').trim(),p=u.searchParams.get('platform')||'',limit=Number(u.searchParams.get('limit')||8);if(q.length<1)return send(res,200,{players:[],clubs:[]});const r=await store.v8Search(q,p,limit);return send(res,200,{players:r.players.map(label),clubs:r.clubs.map(label)})}
-  if(pathname==='/api/v8/rankings'){const type=u.searchParams.get('type')||'player',metric=u.searchParams.get('metric')||(type==='club'?'skill':'goals'),p=u.searchParams.get('platform')||'',min=Number(u.searchParams.get('minGames')||3),pg=page(u),key=`rank:${type}:${metric}:${p}:${min}:${pg.p}:${pg.limit}`,r=await cached(key,30000,()=>store.v8Rankings(type,metric,p,min,pg.p,pg.limit));return send(res,200,{...r,items:r.items.map(label)})}
   if(pathname==='/api/v8/popular'){const type=u.searchParams.get('type')==='club'?'club':'player',limit=Number(u.searchParams.get('limit')||8),items=await cached(`popular:${type}:${limit}`,15000,()=>store.v8Popular(type,limit));return send(res,200,{type,items:items.map(label)})}
   if(pathname==='/api/archive/fc26/summary')return send(res,200,await store.fc26ArchiveSummary());
   if(pathname==='/api/archive/fc26/players'){const q=u.searchParams.get('q')||'',p=u.searchParams.get('platform')||'',pg=page(u),r=await store.fc26ArchivePlayers(q,p,pg.p,pg.limit);return send(res,200,{page:pg.p,total:r.total,pages:Math.max(1,Math.ceil(r.total/pg.limit)),items:r.items.map(label)})}
@@ -112,8 +144,6 @@ if(pathname==='/api/crawl')return send(res,200,crawl);if(pathname==='/api/dashbo
   if(pathname==='/api/search'){const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',r=await store.search(q,p);return send(res,200,{clubs:r.clubs.map(label),players:r.players.map(label)})}
   if(pathname==='/api/discover'&&req.method==='POST'){const q=(u.searchParams.get('q')||'').trim(),p=u.searchParams.get('platform')||'';if(q.length<2)return send(res,400,{error:'2 caractères minimum'});const found=await liveDiscover(store,q,p),r=await store.search(norm(q),p);return send(res,200,{found,clubs:r.clubs.map(label),players:r.players.map(label)})}
   if(pathname==='/api/club/refresh'&&req.method==='POST'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',name=u.searchParams.get('name')||'';if(!p||!id)return send(res,400,{error:'Club invalide'});await syncClub(store,{club_id:id,name},p);const r=await store.clubAdvanced(p,id);return send(res,200,{...r,club:label(r.club),players:r.players.map(label)})}
-  if(pathname==='/api/clubs'){const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',sort=u.searchParams.get('sort')||'skill',pg=page(u),r=await store.paged('clubs',q,p,sort,pg.p,pg.limit);return send(res,200,{page:pg.p,total:r.total,pages:Math.max(1,Math.ceil(r.total/pg.limit)),items:r.items.map(label)})}
-  if(pathname==='/api/players'){const q=norm(u.searchParams.get('q')||''),p=u.searchParams.get('platform')||'',sort=u.searchParams.get('sort')||'games',pg=page(u),r=await store.paged('players',q,p,sort,pg.p,pg.limit);return send(res,200,{page:pg.p,total:r.total,pages:Math.max(1,Math.ceil(r.total/pg.limit)),items:r.items.map(label)})}
   if(pathname==='/api/rankings'){const p=u.searchParams.get('platform')||'',metric=u.searchParams.get('metric')||'goals';return send(res,200,{metric,items:(await store.rankings(p,metric)).map(label)})}
   if(pathname==='/api/matches'){const p=u.searchParams.get('platform')||'';return send(res,200,{items:(await store.recentMatches(p,80)).map(label)})}
   if(pathname==='/api/club'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',r=await store.clubAdvanced(p,id);if(!r)return send(res,404,{error:'Club introuvable'});store.v8TouchView?.('club',p,id).catch(()=>{});return send(res,200,{...r,club:label(r.club),players:r.players.map(label)})}
