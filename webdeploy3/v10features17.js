@@ -15,7 +15,7 @@ const safeNum=(v,min=0,max=1e9)=>Math.max(min,Math.min(max,Number(v||0)||0));
 
 Store.prototype.paged=async function(table,q,p,sort,page,limit){
   const spec=specOf(sort,table==='clubs'?'skill:desc':'games:desc');
-  if(this.mode!=='postgres'||!String(sort||'').includes('|'))return oldPaged.call(this,table,q,p,sort,page,limit);
+  if(this.mode!=='postgres'||(!String(sort||'').includes('|')&&!String(sort||'').includes(':')))return oldPaged.call(this,table,q,p,sort,page,limit);
   page=Math.max(1,num(page)||1);limit=Math.min(100,Math.max(10,num(limit)||50));const offset=(page-1)*limit,pat=`%${q||''}%`,f=spec.filters;
   if(table==='clubs'){
     const exprs={name:'name',platform:'platform',skill:'skill',games:'games',wins:'wins',draws:'draws',losses:'losses',winrate:`CASE WHEN games>0 THEN wins::double precision/games*100 ELSE 0 END`,recent:'updated_at'};const expr=exprs[spec.key]||exprs.skill;
