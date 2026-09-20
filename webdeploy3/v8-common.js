@@ -3,7 +3,7 @@ export const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;'
 export const nf=n=>new Intl.NumberFormat('fr-FR').format(Number(n||0));
 export const f1=n=>Number(n||0)>0?Number(n).toFixed(1):'—';
 export const f2=n=>Number(n||0)>0?Number(n).toFixed(2):'—';
-export const labels={"common-gen5":"Current Gen","common-gen4":"Last Gen",nx:"Switch"};
+export const labels={"common-gen5":"PS5 / Xbox Series / PC","common-gen4":"Xbox One / PS4",nx:"Switch"};
 export const slug=s=>String(s||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,70)||'profil';
 export const playerUrl=p=>`/fr/player/${encodeURIComponent(p.platform)}/${encodeURIComponent(p.player_id)}/${slug(p.name)}`;
 export const clubUrl=c=>`/fr/club/${encodeURIComponent(c.platform)}/${encodeURIComponent(c.club_id)}/${slug(c.name)}`;
