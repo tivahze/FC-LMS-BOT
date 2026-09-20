@@ -1,4 +1,5 @@
 import './eaBrowserHeaders24.js';
+import './season27.js';
 import './integrity6.js';
 import './backfill7.js';
 import './opponents8.js';
