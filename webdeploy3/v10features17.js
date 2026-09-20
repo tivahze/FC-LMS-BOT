@@ -6,7 +6,7 @@ const oldRankings=Store.prototype.v8Rankings;
 const oldPlayer=Store.prototype.player;
 const oldClub=Store.prototype.clubAdvanced;
 const oldMatch=Store.prototype.v9Match;
-const playerPosition=`CASE WHEN raw_json IS NOT NULL AND raw_json<>'' THEN COALESCE(raw_json::jsonb->>'position',raw_json::jsonb->>'proPosition',raw_json::jsonb->>'positionName',raw_json::jsonb->>'role','') ELSE '' END`;
+const playerPosition=`CASE WHEN raw_json IS NOT NULL AND raw_json<>'' THEN COALESCE(NULLIF(raw_json::jsonb->>'favoritePosition',''),NULLIF(raw_json::jsonb->>'proPosition',''),NULLIF(raw_json::jsonb->>'proPos',''),NULLIF(raw_json::jsonb->>'positionName',''),NULLIF(raw_json::jsonb->>'position',''),NULLIF(raw_json::jsonb->>'pos',''),NULLIF(raw_json::jsonb->>'role',''),'') ELSE '' END`;
 const playerArchetype=`CASE WHEN raw_json IS NOT NULL AND raw_json<>'' THEN COALESCE(raw_json::jsonb->>'archetypeid',raw_json::jsonb->>'archetypeId',raw_json::jsonb->>'archetype_id',raw_json::jsonb->>'buildId','') ELSE '' END`;
 const clamp=(v,a=0,b=100)=>Math.max(a,Math.min(b,Number(v||0)));
 const specOf=(s,fallback='games:desc')=>{const parts=String(s||fallback).split('|'),[key,rawDir]=parts.shift().split(':'),filters={};for(const x of parts){const i=x.indexOf('=');if(i>0)filters[x.slice(0,i)]=x.slice(i+1)}return{key:key||fallback.split(':')[0],dir:rawDir==='asc'?'ASC':'DESC',dirName:rawDir==='asc'?'asc':'desc',filters}};
@@ -29,7 +29,7 @@ Store.prototype.paged=async function(table,q,p,sort,page,limit){
   const params=[p||'',q||'',pat];let cond=`($1='' OR platform=$1) AND ($2='' OR name_norm LIKE $3) AND games>=${minGames} AND rating>=${minRating} AND goals>=${minGoals} AND assists>=${minAssists}`;
   if(archIds.length)cond+=` AND ${playerArchetype} IN (${archIds.map(x=>`'${x}'`).join(',')})`;if(days)cond+=` AND updated_at>=EXTRACT(EPOCH FROM NOW()-INTERVAL '${days} days')`;if(club){params.push(`%${club}%`);cond+=` AND lower(COALESCE(club_name,'')) LIKE $${params.length}`}
   params.push(limit,offset);const lp=params.length-1,op=params.length;
-  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,${playerPosition} position,COUNT(*) OVER() total_count FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $${lp} OFFSET $${op}`,params);
+  const items=await this.q(`SELECT platform,player_id,name,club_id,club_name,games,goals,assists,rating,updated_at,raw_json,COALESCE(NULLIF(${playerPosition},''),(SELECT mp.position FROM match_players mp JOIN matches mm ON mm.uid=mp.match_uid WHERE mp.platform=players.platform AND mp.player_id=players.player_id AND COALESCE(mp.position,'')<>'' ORDER BY mm.ts DESC LIMIT 1),'') position,COUNT(*) OVER() total_count FROM players WHERE ${cond} ORDER BY ${expr} ${spec.dir} NULLS LAST,name ASC LIMIT $${lp} OFFSET $${op}`,params);
   const total=num(items[0]?.total_count);return{total,items};
 };
 
