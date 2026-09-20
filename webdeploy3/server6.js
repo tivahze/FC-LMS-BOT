@@ -5,6 +5,7 @@ import './backfill7.js';
 import './opponents8.js';
 import './resolveClubNames7.js';
 import './historyTracker9.js';
+import './liveIndexer27.js';
 import './discovery10.js';
 import './v8features.js';
 import './v8enhance11.js';
