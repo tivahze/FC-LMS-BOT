@@ -47,7 +47,7 @@ async function searchPrefix(store,row){
   const count=ids.size;
   const shouldExpand=count>0&&(row.depth===1||(row.depth===2&&count>=2)||(row.depth>=3&&(count>=EXPAND_MIN||maxReturned>=80)));
   let children=0;if(shouldExpand&&row.depth<MAX_DEPTH)children=await expand(store,row.platform,row.prefix,row.depth,count*10+maxReturned);
-  const nextState=errors===2&&/EA 400/.test(active.lastError||'')?'skipped':'done';
+  const nextState=errors>=1&&/EA 400/.test(active.lastError||'')?'skipped':'done';
   await store.pool.query(`UPDATE discovery_frontier SET state=$1,last_count=$2,last_run=EXTRACT(EPOCH FROM NOW())::BIGINT,priority=$3 WHERE platform=$4 AND prefix=$5`,[nextState,count,count*10+maxReturned,row.platform,row.prefix]);
   active.processed++;active.found+=count;active.expanded+=children;active.lastPrefix=row.prefix;active.lastPlatform=row.platform;
   return [...clubsById.values()];
