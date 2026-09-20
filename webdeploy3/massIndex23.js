@@ -123,7 +123,100 @@ async function markHarvest(store,row,result,stateName='done',error=''){
 async function nextHarvestRows(store,limit,cutoff){
   return store.q(`SELECT c.platform,c.club_id,c.name,COALESCE(h.last_run,0) last_run,COALESCE(h.state,'new') harvest_state
     FROM clubs c LEFT JOIN private_harvest23 h ON h.platform=c.platform AND h.club_id=c.club_id
-    WHERE c.platform=$1 AND (h.club_id IS NULL OR h.last_run<$2 OR h.state='retry')
+    WHERE c.platform=$1 AND c.club_id ~ '^[0-9]+
+    ORDER BY CASE WHEN h.club_id IS NULL THEN 0 ELSE 1 END,c.updated_at DESC,COALESCE(h.last_run,0) ASC
+    LIMIT $3`,[PLATFORM,cutoff,limit]);
+}
+
+async function harvestOne(store,row){
+  let privateResult={matches:0,players:0,opponents:0},roster=0;
+  try{
+    // Séquentiel à l'intérieur d'un club pour éviter le burst EA qui déclenchait les 403.
+    privateResult=await savePrivateHistory(store,row);
+    await sleep(550);
+    try{roster=await saveRoster(store,row)}catch(e){console.warn(`[MASS23] roster ${row.club_id}: ${e.message}`)}
+    const result={...privateResult,roster};
+    await markHarvest(store,row,result,'done','');
+    state.harvested++;state.matches+=result.matches;state.playerRows+=result.players;state.rosterRows+=roster;
+    console.log(`[MASS23] graph ${row.name||row.club_id}#${row.club_id} matches=${result.matches} matchPlayers=${result.players} roster=${roster} opponents=${result.opponents}`);
+    return true;
+  }catch(e){
+    state.lastError=e.message;
+    await markHarvest(store,row,{matches:0,players:0,roster:0},'retry',e.message);
+    console.warn(`[MASS23] graph ${row.club_id}: ${e.message}`);
+    if(/EA 403|EA 429/.test(String(e.message)))await sleep(2500);
+    return false;
+  }
+}
+
+async function harvestGraph(store){
+  const cutoff=Math.floor(Date.now()/1000)-REHARVEST_HOURS*3600;
+  const beforePlayers=num((await store.one(`SELECT COUNT(*) c FROM players WHERE platform=$1`,[PLATFORM]))?.c);
+  const beforeClubs=num((await store.one(`SELECT COUNT(*) c FROM clubs WHERE platform=$1`,[PLATFORM]))?.c);
+  let processed=0;
+
+  for(let wave=1;wave<=HARVEST_WAVES&&processed<HARVEST_BATCH;wave++){
+    const remaining=HARVEST_BATCH-processed;
+    const perWave=Math.min(remaining,Math.ceil(HARVEST_BATCH/HARVEST_WAVES));
+    const rows=await nextHarvestRows(store,perWave,cutoff);
+    if(!rows.length)break;
+    state.waves=wave;
+    console.log(`[MASS23] graph wave=${wave}/${HARVEST_WAVES} clubs=${rows.length} concurrency=${HARVEST_CONCURRENCY}`);
+
+    for(let i=0;i<rows.length;i+=HARVEST_CONCURRENCY){
+      const chunk=rows.slice(i,i+HARVEST_CONCURRENCY);
+      await Promise.all(chunk.map(row=>harvestOne(store,row)));
+      processed+=chunk.length;
+      await sleep(700);
+    }
+    // Les adversaires ajoutés pendant cette vague sont immédiatement disponibles pour la suivante.
+    await sleep(600);
+  }
+
+  const afterPlayers=num((await store.one(`SELECT COUNT(*) c FROM players WHERE platform=$1`,[PLATFORM]))?.c);
+  const afterClubs=num((await store.one(`SELECT COUNT(*) c FROM clubs WHERE platform=$1`,[PLATFORM]))?.c);
+  const newP=Math.max(0,afterPlayers-beforePlayers),newC=Math.max(0,afterClubs-beforeClubs);
+  state.newPlayers+=newP;state.graphNewClubs+=newC;state.newClubs+=newC;
+  console.log(`[MASS23] graph done processed=${processed} clubs=${beforeClubs}->${afterClubs} newClubs=${newC} players=${beforePlayers}->${afterPlayers} newPlayers=${newP}`);
+}
+
+async function cycle(store){
+  if(store.mode!=='postgres'||running)return;
+  running=true;state.running=true;
+  Object.assign(state,{probed:0,clubsFound:0,newClubs:0,graphNewClubs:0,harvested:0,waves:0,matches:0,playerRows:0,rosterRows:0,newPlayers:0,lastError:'',started:Math.floor(Date.now()/1000)});
+  try{
+    await harvestGraph(store);
+    if(RAW_DISCOVERY_ENABLED&&!/EA 403|EA 429/.test(state.lastError||''))await discoverIds(store);
+  }catch(e){state.lastError=e.message;console.warn('[MASS23]',e.message)}finally{
+    state.durationSec=Math.max(1,Math.floor(Date.now()/1000)-state.started);state.running=false;running=false;
+    console.log(`[MASS23] cycle done cursor=${state.cursor} newClubs=${state.newClubs} graphNewClubs=${state.graphNewClubs} harvested=${state.harvested} matches=${state.matches} rosterRows=${state.rosterRows} newPlayers=${state.newPlayers} duration=${state.durationSec}s${state.lastError?' lastError='+state.lastError:''}`);
+  }
+}
+
+const previousInit=Store.prototype.init;
+Store.prototype.init=async function(){
+  await previousInit.call(this);
+  if(this.mode!=='postgres')return;
+  await this.pool.query(`CREATE TABLE IF NOT EXISTS private_harvest23(
+    platform TEXT NOT NULL,club_id TEXT NOT NULL,last_run BIGINT DEFAULT 0,matches INTEGER DEFAULT 0,players INTEGER DEFAULT 0,
+    state TEXT DEFAULT 'new',attempts INTEGER DEFAULT 0,last_error TEXT DEFAULT '',PRIMARY KEY(platform,club_id))`);
+  await this.pool.query(`CREATE INDEX IF NOT EXISTS private_harvest23_run_idx ON private_harvest23(platform,state,last_run)`);
+  const cursor=await seedCursor(this),q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='done') done,COALESCE(SUM(matches),0) matches,COALESCE(SUM(players),0) players FROM private_harvest23 WHERE platform=$1`,[PLATFORM]);
+  state.cursor=cursor;
+  console.log(`[MASS23] PRODUCTIVE TURBO ready cursor=${cursor} harvested=${num(q?.done)}/${num(q?.total)} archivedMatches=${num(q?.matches)} playerRows=${num(q?.players)} every=${INTERVAL_MINUTES}m harvest=${HARVEST_BATCH} concurrency=${HARVEST_CONCURRENCY} waves=${HARVEST_WAVES} rawScan=${RAW_DISCOVERY_ENABLED?'on':'off'}`);
+  setTimeout(()=>cycle(this),15000).unref();
+  setInterval(()=>cycle(this),INTERVAL_MINUTES*60000).unref();
+};
+
+const previousDashboard=Store.prototype.dashboard;
+Store.prototype.dashboard=async function(){
+  const d=await previousDashboard.call(this);if(this.mode!=='postgres')return d;
+  let q={total:0,done:0,retry:0,matches:0,players:0};
+  try{q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='done') done,COUNT(*) FILTER(WHERE state='retry') retry,COALESCE(SUM(matches),0) matches,COALESCE(SUM(players),0) players FROM private_harvest23 WHERE platform=$1`,[PLATFORM])||q}catch(e){if(e?.code!=='42P01')console.warn('[MASS23 dashboard]',e.message)}
+  return{...d,massIndexer:{...state,harvestTotal:num(q?.total),harvestDone:num(q?.done),harvestRetry:num(q?.retry),archiveMatches:num(q?.matches),archivePlayerRows:num(q?.players),intervalMinutes:INTERVAL_MINUTES,discoveryBatch:DISCOVERY_BATCH,harvestBatch:HARVEST_BATCH,harvestConcurrency:HARVEST_CONCURRENCY,harvestWaves:HARVEST_WAVES,reharvestHours:REHARVEST_HOURS,rawDiscovery:RAW_DISCOVERY_ENABLED}};
+};
+
+console.log('[MASS23] PRODUCTIVE TURBO graph + roster indexer enabled'); AND (h.club_id IS NULL OR h.last_run<$2 OR h.state='retry')
     ORDER BY CASE WHEN h.club_id IS NULL THEN 0 ELSE 1 END,c.updated_at DESC,COALESCE(h.last_run,0) ASC
     LIMIT $3`,[PLATFORM,cutoff,limit]);
 }
