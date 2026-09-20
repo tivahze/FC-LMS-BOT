@@ -13,19 +13,19 @@ export const now = () => Math.floor(Date.now()/1000);
 export const gap = () => Math.max(350, Number(process.env.EA_REQUEST_GAP_MS || 600));
 
 export const ARCHETYPES = {
-  '1': {name:'Shot Stopper', playstyle:'Deflector', group:'Gardien'},
-  '2': {name:'Sweeper Keeper', playstyle:'Far Throw', group:'Gardien'},
-  '3': {name:'Progressor', playstyle:'Intercept', group:'Défenseur'},
+  '1': {name:'Dernier rempart', playstyle:'Deflector', group:'Gardien'},
+  '2': {name:'Gardien libéro', playstyle:'Far Throw', group:'Gardien'},
+  '3': {name:'Facilitation', playstyle:'Intercept', group:'Défenseur'},
   '4': {name:'Boss', playstyle:'Anticipate', group:'Défenseur'},
-  '5': {name:'Engine', playstyle:'Rapid', group:'Défenseur'},
-  '6': {name:'Marauder', playstyle:'Trickster', group:'Défenseur'},
-  '7': {name:'Recycler', playstyle:'Tiki Taka', group:'Milieu'},
+  '5': {name:'Traque', playstyle:'Rapid', group:'Défenseur'},
+  '6': {name:'Trouble-fête', playstyle:'Trickster', group:'Défenseur'},
+  '7': {name:'Récupération', playstyle:'Tiki Taka', group:'Milieu'},
   '8': {name:'Maestro', playstyle:'Incisive', group:'Milieu'},
-  '9': {name:'Creator', playstyle:'Quick Step', group:'Milieu'},
-  '10': {name:'Spark', playstyle:'Technical', group:'Milieu'},
-  '11': {name:'Magician', playstyle:'Inventive', group:'Attaquant'},
-  '12': {name:'Finisher', playstyle:'Acrobatic', group:'Attaquant'},
-  '13': {name:'Target', playstyle:'Press Proven', group:'Attaquant'}
+  '9': {name:'Création', playstyle:'Quick Step', group:'Milieu'},
+  '10': {name:'Étincelle', playstyle:'Technical', group:'Milieu'},
+  '11': {name:'Magie', playstyle:'Inventive', group:'Attaquant'},
+  '12': {name:'Finisseur', playstyle:'Acrobatic', group:'Attaquant'},
+  '13': {name:'Point d’appui', playstyle:'Press Proven', group:'Attaquant'}
 };
 
 export function ratingOf(v){
