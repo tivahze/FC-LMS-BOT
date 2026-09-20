@@ -72,6 +72,16 @@ const server=http.createServer(async(req,res)=>{try{
       return send(res,503,{items:[],ready:false,error:'Flux temporairement indisponible'});
     }
   }
+  if(pathname==='/api/v9/records'){
+    const p=u.searchParams.get('platform')||'';
+    try{
+      const r=await cached(`records:${p}`,60000,()=>store.v9Records(p));
+      return send(res,200,{...r,ready:storeReady});
+    }catch(e){
+      console.warn('[RECORDS API]',e.message);
+      return send(res,503,{ready:false,error:'Records temporairement indisponibles'});
+    }
+  }
   if(!storeReady&&(pathname.startsWith('/api/')||pathname.startsWith('/fr/player/')||pathname.startsWith('/fr/club/')||pathname.startsWith('/fr/match/')))return send(res,503,{error:'Initialisation en cours',ready:false});
   let m=pathname.match(/^\/fr\/player\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('player',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/club\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('club',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
@@ -96,7 +106,6 @@ if(pathname==='/api/crawl')return send(res,200,crawl);if(pathname==='/api/dashbo
   if(pathname==='/api/archive/fc26/matches'){const p=u.searchParams.get('platform')||'',limit=Number(u.searchParams.get('limit')||50),items=await store.fc26ArchiveMatches(p,limit);return send(res,200,{items:items.map(label)})}
   if(pathname==='/api/v9/seasons')return send(res,200,await store.v9Seasons());
   if(pathname==='/api/v9/match'){const p=u.searchParams.get('platform')||'',id=u.searchParams.get('id')||'',r=await store.v9Match(p,id);if(!r)return send(res,404,{error:'Match introuvable'});return send(res,200,r)}
-  if(pathname==='/api/v9/records'){const p=u.searchParams.get('platform')||'',r=await cached(`records:${p}`,30000,()=>store.v9Records(p));return send(res,200,r)}
   if(pathname==='/api/v9/h2h'){const p=u.searchParams.get('platform')||'',a=u.searchParams.get('a')||'',b=u.searchParams.get('b')||'';if(!p||!a||!b)return send(res,400,{error:'Deux clubs sont requis'});const r=await store.v9H2H(p,a,b);return send(res,200,r||{})}
   if(pathname==='/api/v9/admin'){const expected=process.env.ADMIN_TOKEN||'',key=u.searchParams.get('key')||'';if(!expected||key!==expected)return send(res,404,{error:'not found'});const r=await store.v9Admin();return send(res,200,{...r,crawl})}
   if(pathname==='/api/overview'){const o=await store.overview();return send(res,200,{recentClubs:o.recentClubs.map(label),topPlayers:o.topPlayers.map(label),matches:o.matches.map(label)})}
