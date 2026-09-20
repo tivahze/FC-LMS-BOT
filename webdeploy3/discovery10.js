@@ -36,7 +36,7 @@ async function expand(store,platform,prefix,depth,score){
 
 async function searchPrefix(store,row){
   const ids=new Set(),clubsById=new Map();let maxReturned=0,errors=0;
-  for(const endpoint of ['/currentSeasonLeaderboard/search','/allTimeLeaderboard/search']){
+  for(const endpoint of ['/currentSeasonLeaderboard/search']){
     try{
       const clubs=await extractClubs(store,await ea(endpoint,{platform:row.platform,clubName:row.prefix,maxResultCount:100}),row.platform);
       maxReturned=Math.max(maxReturned,clubs.length);
@@ -98,6 +98,8 @@ Store.prototype.init=async function(){
   await previousInit.call(this);if(this.mode!=='postgres')return;
   await this.pool.query(`CREATE TABLE IF NOT EXISTS discovery_frontier(platform TEXT NOT NULL,prefix TEXT NOT NULL,depth INTEGER DEFAULT 1,state TEXT DEFAULT 'pending',last_count INTEGER DEFAULT 0,last_run BIGINT DEFAULT 0,priority INTEGER DEFAULT 0,PRIMARY KEY(platform,prefix))`);
   await this.pool.query(`CREATE INDEX IF NOT EXISTS discovery_frontier_state_idx ON discovery_frontier(state,depth,priority)`);
+  const seasonReset=await this.meta('discovery:fc27:reset','0');
+  if(seasonReset!=='1'){await this.pool.query(`DELETE FROM discovery_frontier`);await this.setMeta('discovery:fc27:reset','1');console.log('[DISCOVERY10] FC27 frontier reset');}
   await this.pool.query(`UPDATE discovery_frontier SET state='skipped' WHERE state='pending' AND (NOT(platform=ANY($1::text[])) OR (depth>1 AND priority<=1))`,[SEARCH_PLATFORMS]);
   await seed(this);
   const f=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='pending') pending,COUNT(*) FILTER(WHERE state='skipped') skipped FROM discovery_frontier`);
