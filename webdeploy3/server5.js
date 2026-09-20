@@ -7,10 +7,7 @@ import {LABEL,norm} from './constants.js';
 import {crawl,runCrawler,liveDiscover,syncClub} from './crawler5.js';
 const DIR=path.dirname(fileURLToPath(import.meta.url)),HOST=process.env.HOST||'0.0.0.0',PORT=Number(process.env.PORT||3000),store=new Store();
 let storeReady=false,storeInitError='';
-store.init().then(()=>{storeReady=true;console.log('[BOOT] store initialization complete')}).catch(e=>{storeInitError=e?.message||String(e);console.error('[BOOT] store initialization failed:',storeInitError)});
-if(store.mode==='postgres'){
-  try{await store.pool.query(`UPDATE players SET rating=CASE WHEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision>10 THEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision/10 ELSE NULLIF(raw_json::jsonb->>'ratingAve','')::double precision END WHERE rating=0 AND raw_json IS NOT NULL AND raw_json<>'' AND raw_json::jsonb ? 'ratingAve'`)}catch(e){console.warn('Rating backfill skipped:',e.message)}
-}
+store.init().then(async()=>{storeReady=true;console.log('[BOOT] store initialization complete');if(store.mode==='postgres'){try{await store.pool.query(`UPDATE players SET rating=CASE WHEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision>10 THEN NULLIF(raw_json::jsonb->>'ratingAve','')::double precision/10 ELSE NULLIF(raw_json::jsonb->>'ratingAve','')::double precision END WHERE rating=0 AND raw_json IS NOT NULL AND raw_json<>'' AND raw_json::jsonb ? 'ratingAve'`)}catch(e){console.warn('Rating backfill skipped:',e.message)}}}).catch(e=>{storeInitError=e?.message||String(e);console.error('[BOOT] store initialization failed:',storeInitError)});
 const files={
   '/':['home-v8.html','text/html; charset=utf-8'],'/legacy':['index5.html','text/html; charset=utf-8'],'/style5.css':['style5.css','text/css; charset=utf-8'],'/app5.js':['app5.js','application/javascript; charset=utf-8'],'/v8.css':['v8.css','text/css; charset=utf-8'],'/v8-common.js':['v8-common.js','application/javascript; charset=utf-8'],'/home-v8.js':['home-v8.js','application/javascript; charset=utf-8'],
   '/fr/player':['player.html','text/html; charset=utf-8'],'/fr/player/':['player.html','text/html; charset=utf-8'],'/player-page.css':['player-page.css','text/css; charset=utf-8'],'/player-page.js':['player-page.js','application/javascript; charset=utf-8'],
