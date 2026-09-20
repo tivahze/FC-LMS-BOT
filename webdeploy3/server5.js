@@ -115,7 +115,12 @@ const server=http.createServer(async(req,res)=>{try{
       return send(res,503,{page:pg.p,total:0,pages:1,items:[],ready:false,error:'Liste des clubs temporairement indisponible'});
     }
   }
-  if(!storeReady&&(pathname.startsWith('/api/')||pathname.startsWith('/fr/player/')||pathname.startsWith('/fr/club/')||pathname.startsWith('/fr/match/')))return send(res,503,{error:'Initialisation en cours',ready:false});
+  if(!storeReady){
+    if(pathname.startsWith('/api/'))return send(res,503,{error:'Initialisation en cours',ready:false});
+    if(/^\/fr\/player\/[^/]+\/[^/]+/.test(pathname))return serve(res,'player-detail.html','text/html; charset=utf-8','no-cache');
+    if(/^\/fr\/club\/[^/]+\/[^/]+/.test(pathname))return serve(res,'club-detail.html','text/html; charset=utf-8','no-cache');
+    if(/^\/fr\/match\/[^/]+\/[^/]+\/?$/.test(pathname))return serve(res,'match-detail.html','text/html; charset=utf-8','no-cache');
+  }
   let m=pathname.match(/^\/fr\/player\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('player',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/club\/([^/]+)\/([^/]+)(?:\/.*)?$/);if(m)return serveProfile('club',decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
   m=pathname.match(/^\/fr\/match\/([^/]+)\/([^/]+)\/?$/);if(m)return serveMatch(decodeURIComponent(m[1]),decodeURIComponent(m[2]),req,res);
