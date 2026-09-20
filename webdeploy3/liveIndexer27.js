@@ -147,7 +147,7 @@ Store.prototype.init=async function(){
   const seedLive=()=>this.pool.query(`INSERT INTO live_index27(platform,club_id,name,last_poll,latest_match,last_new_match,next_type,last_roster,state,errors,last_error)
     SELECT platform,club_id,name,0,COALESCE((SELECT MAX(ts) FROM matches m WHERE m.platform=c.platform AND (m.home_club_id=c.club_id OR m.away_club_id=c.club_id)),0),0,0,0,'new',0,''
     FROM clubs c WHERE platform=$1 AND club_id ~ '^[0-9]+$'
-    ON CONFLICT(platform,club_id) DO UPDATE SET name=EXCLUDED.name`,[PLATFORM].then(()=>console.log('[LIVE27] background full seed complete')).catch(e=>console.warn('[LIVE27] background seed:',e.message));
+    ON CONFLICT(platform,club_id) DO UPDATE SET name=EXCLUDED.name`,[PLATFORM]).then(()=>console.log('[LIVE27] background full seed complete')).catch(e=>console.warn('[LIVE27] background seed:',e.message));
   setTimeout(seedLive,1200).unref();
   const q=await this.one(`SELECT COUNT(*) total,COUNT(*) FILTER(WHERE state='hot') hot,COUNT(*) FILTER(WHERE last_poll>0) polled FROM live_index27 WHERE platform=$1`,[PLATFORM]);
   console.log(`[LIVE27] adaptive live indexer ready immediately clubs=${num(q?.total)} polled=${num(q?.polled)} hot=${num(q?.hot)} loop=${LOOP_SECONDS}s batch=${BATCH}; full seed background`);
